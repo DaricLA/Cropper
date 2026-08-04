@@ -79,6 +79,17 @@ class BatchImageCrop:
         self.share_size_var = tk.BooleanVar(value=True)
         self.share_pos_var = tk.BooleanVar(value=False)
 
+        # 配置导出按钮加粗样式（从 Info.TButton 继承颜色和状态）
+        style = ttkb.Style()
+        style.configure("Export.TButton", font=("Microsoft YaHei", 10, "bold"))
+        style.map("Export.TButton",
+                  foreground=style.lookup("Info.TButton", "foreground"),
+                  background=style.lookup("Info.TButton", "background"),
+                  bordercolor=style.lookup("Info.TButton", "bordercolor"),
+                  darkcolor=style.lookup("Info.TButton", "darkcolor"),
+                  lightcolor=style.lookup("Info.TButton", "lightcolor"),
+                  focuscolor=style.lookup("Info.TButton", "focuscolor"))
+
         self.build_ui()
 
         # 键盘绑定
@@ -293,9 +304,9 @@ class BatchImageCrop:
         self.progress_label = ttkb.Label(bot_frame, text="", font=("Microsoft YaHei", 9))
         self.progress_label.pack(side=LEFT)
 
-        ttkb.Button(bot_frame, text="批量裁剪导出", bootstyle="info",
-                    command=self.batch_crop, font=("Microsoft YaHei", 10, "bold"),
-                    width=18).pack(side=RIGHT)
+        ttkb.Button(bot_frame, text="批量裁剪导出",
+                    command=self.batch_crop, width=18,
+                    style="Export.TButton").pack(side=RIGHT)
 
     # ===================== 缩略图管理 =====================
     def _on_thumb_inner_configure(self, event):
@@ -646,9 +657,9 @@ class BatchImageCrop:
                 raise ValueError
             self.ratio_w = w
             self.ratio_h = h
-            # 重新居中所有图片的裁剪框
             self._recalc_all_crop_positions()
             self._render_canvas()
+            self._update_info_bar()
         except (ValueError, ZeroDivisionError):
             messagebox.showerror("错误", "请输入有效的正数")
 
@@ -665,6 +676,9 @@ class BatchImageCrop:
                 max_w, max_h = self._get_max_crop_ratios(iw, ih)
                 cw = max_w * s.crop_scale
                 ch = max_h * s.crop_scale
+                s.crop_left = max(0, min(s.crop_left, 1.0 - cw))
+                s.crop_top = max(0, min(s.crop_top, 1.0 - ch))
+                # 居中
                 s.crop_left = (1.0 - cw) / 2
                 s.crop_top = (1.0 - ch) / 2
                 self.image_settings[i] = s
@@ -876,17 +890,21 @@ class BatchImageCrop:
             actual_h = max_h * new_scale
 
             if self.drag_mode == 'se':
+                # NW corner stays fixed
                 s.crop_left = self.drag_init_left
                 s.crop_top = self.drag_init_top
             elif self.drag_mode == 'sw':
+                # NE corner stays fixed -> left changes
                 old_right = self.drag_init_left + max_w * self.drag_init_scale
                 s.crop_left = old_right - actual_w
                 s.crop_top = self.drag_init_top
             elif self.drag_mode == 'ne':
+                # SW corner stays fixed
                 s.crop_left = self.drag_init_left
                 old_bottom = self.drag_init_top + max_h * self.drag_init_scale
                 s.crop_top = old_bottom - actual_h
             elif self.drag_mode == 'nw':
+                # SE corner stays fixed
                 old_right = self.drag_init_left + max_w * self.drag_init_scale
                 old_bottom = self.drag_init_top + max_h * self.drag_init_scale
                 s.crop_left = old_right - actual_w
