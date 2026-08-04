@@ -1,5 +1,5 @@
 """
-MBO/PBO批量图片剪裁工具 v2.1
+MBO/PBO批量图片剪裁工具 v2.2
 - 批量加载图片，缩略图预览列表（左右排布节省空间）
 - 裁剪框固定比例、大小可调（拖拽角落缩放）
 - 每张图独立裁剪位置/大小，可选共享
@@ -10,6 +10,7 @@ MBO/PBO批量图片剪裁工具 v2.1
 """
 
 import tkinter as tk
+from tkinter import ttk
 from tkinter import filedialog, messagebox
 import ttkbootstrap as ttkb
 from ttkbootstrap.constants import *
@@ -36,7 +37,6 @@ class ToolTip:
         text = self.text_getter() if self.text_getter else self.static_text
         if not text:
             return
-        # 计算位置
         x = self.widget.winfo_rootx() + self.widget.winfo_width() + 5
         y = self.widget.winfo_rooty()
         self.tip_window = tw = tk.Toplevel(self.widget)
@@ -58,23 +58,23 @@ class PerImageSettings:
     def __init__(self):
         self.flip_h = False
         self.flip_v = False
-        self.rotate = 0       # 0, 90, 180, 270
-        self.crop_left = 0.0  # 裁剪框左上角 X（0~1 相对于图片宽）
-        self.crop_top = 0.0   # 裁剪框左上角 Y（0~1 相对于图片高）
-        self.crop_scale = 1.0 # 裁剪框大小（0.1~1.0，1.0=最大可能尺寸）
+        self.rotate = 0
+        self.crop_left = 0.0
+        self.crop_top = 0.0
+        self.crop_scale = 1.0
 
 
 class BatchImageCrop:
     def __init__(self, root):
         self.root = root
-        self.root.title("MBO/PBO批量图片剪裁工具 v2.1")
+        self.root.title("MBO/PBO批量图片剪裁工具 v2.2")
         self.root.geometry("1500x950")
         self.root.minsize(1500, 950)
 
         # --- 数据 ---
         self.image_files = []
-        self.image_settings = {}   # index -> PerImageSettings
-        self.thumbnails = {}       # index -> PhotoImage
+        self.image_settings = {}
+        self.thumbnails = {}
         self.current_index = -1
         self.original_image = None
         self.display_photo = None
@@ -90,7 +90,7 @@ class BatchImageCrop:
         self.pad_y = 0
 
         # 交互状态
-        self.drag_mode = None       # None, 'move', 'se', 'sw', 'ne', 'nw'
+        self.drag_mode = None
         self.drag_start_x = 0
         self.drag_start_y = 0
         self.drag_init_left = 0.0
@@ -114,19 +114,25 @@ class BatchImageCrop:
         self._thumb_scroll_hide_after = None
         self._right_scroll_hide_after = None
 
-        # 拖拽结束后居中裁剪框的标志
-        self._center_crop_after_drag = False
-        # 拖拽后锁定的裁剪框中心（图片相对坐标），跨缩放/窗口调整持久生效
+        # 拖拽后锁定裁剪框中心（图片相对坐标），跨图片持久保持居中
         self._locked_crop_cx = None
         self._locked_crop_cy = None
+
+        # 配置 ttk 滚动条样式
+        style = ttk.Style()
+        style.configure("Secondary.Vertical.TScrollbar",
+                        troughcolor="#ecf0f1",
+                        bordercolor="#bdc3c7",
+                        darkcolor="#bdc3c7",
+                        lightcolor="#ecf0f1",
+                        arrowcolor="#7f8c8d",
+                        arrowsize=12)
 
         self.build_ui()
 
         # 键盘绑定
-        # 上下键 = 切换图片
         self.root.bind('<Up>', lambda e: self.select_prev_image())
         self.root.bind('<Down>', lambda e: self.select_next_image())
-        # Ctrl + 方向键 = 微调裁剪框
         self.root.bind('<Control-Left>', lambda e: self.nudge(-5, 0))
         self.root.bind('<Control-Right>', lambda e: self.nudge(5, 0))
         self.root.bind('<Control-Up>', lambda e: self.nudge(0, -5))
@@ -138,7 +144,6 @@ class BatchImageCrop:
 
     # ===================== 辅助计算 =====================
     def _get_max_crop_ratios(self, iw, ih):
-        """返回最大裁剪框占图片的宽高比例 (max_w_ratio, max_h_ratio)"""
         target_aspect = self.ratio_w / self.ratio_h
         img_aspect = iw / ih
         if target_aspect > img_aspect:
@@ -147,7 +152,6 @@ class BatchImageCrop:
             return target_aspect / img_aspect, 1.0
 
     def _get_crop_rect_rel(self, settings, iw, ih):
-        """返回裁剪框相对坐标 (left, top, w, h)，值域 0~1"""
         max_w, max_h = self._get_max_crop_ratios(iw, ih)
         w = max_w * settings.crop_scale
         h = max_h * settings.crop_scale
@@ -161,7 +165,6 @@ class BatchImageCrop:
         return self.image_settings.get(self.current_index, PerImageSettings())
 
     def _apply_transform(self, img, settings):
-        """对图片应用翻转和旋转"""
         if settings.flip_h:
             img = img.transpose(Image.FLIP_LEFT_RIGHT)
         if settings.flip_v:
@@ -176,7 +179,6 @@ class BatchImageCrop:
 
     # ===================== 共享逻辑 =====================
     def _get_target_crop_pixels(self, src_settings):
-        """从当前图片计算目标裁剪像素尺寸 (target_w, target_h)"""
         src_img = Image.open(self.image_files[self.current_index])
         if src_img.mode in ('RGBA', 'P'):
             src_img = src_img.convert('RGB')
@@ -188,22 +190,18 @@ class BatchImageCrop:
         return target_w, target_h
 
     def _compute_scale_for_pixels(self, target_w, target_h, iw, ih):
-        """根据目标像素尺寸和图片尺寸，反算 crop_scale"""
         max_w, max_h = self._get_max_crop_ratios(iw, ih)
         if max_w <= 0 or max_h <= 0:
             return 1.0
-        # crop_scale 需要同时满足宽和高约束，取较小值确保不超出
         scale_w = target_w / (max_w * iw)
         scale_h = target_h / (max_h * ih)
         new_scale = min(scale_w, scale_h)
         return max(0.1, min(1.0, new_scale))
 
     def _sync_shared(self, changed):
-        """根据共享模式同步设置到所有图片"""
         if self.current_index < 0:
             return
         src = self._get_current_settings()
-        # 如果共享大小，先从当前图片计算目标像素尺寸
         target_w, target_h = None, None
         if changed == 'size' and self.share_size_var.get():
             target_w, target_h = self._get_target_crop_pixels(src)
@@ -215,7 +213,6 @@ class BatchImageCrop:
                 s.crop_left = src.crop_left
                 s.crop_top = src.crop_top
             if changed == 'size' and self.share_size_var.get():
-                # 根据目标像素尺寸反算该图片需要的 crop_scale
                 try:
                     img = Image.open(self.image_files[i])
                     if img.mode in ('RGBA', 'P'):
@@ -228,7 +225,6 @@ class BatchImageCrop:
             self.image_settings[i] = s
 
     def _on_share_toggle(self):
-        """共享复选框变化时，将当前图片的设置同步到所有图片"""
         if self.current_index < 0:
             return
         src = self._get_current_settings()
@@ -297,24 +293,27 @@ class BatchImageCrop:
         self.canvas.bind("<Configure>", self.on_canvas_resize)
         self.canvas.bind("<MouseWheel>", self.on_mouse_wheel)
 
-        # 右侧面板（固定宽度，内容可滚动）
+        # 右侧面板（固定宽度）
         right_panel = ttkb.Frame(mid_frame, width=260)
         right_panel.pack(fill=Y, side=LEFT, padx=(8, 0))
         right_panel.pack_propagate(False)
 
-        # 右侧内容滚动区
-        right_canvas = tk.Canvas(right_panel, highlightthickness=0, background="white")
-        right_scrollbar = tk.Scrollbar(right_panel, orient="vertical", command=right_canvas.yview)
+        # 右侧面板：上方图片列表可滚动，下方控件固定
+        # 上方：可滚动图片列表
+        right_scroll_frame = ttkb.Frame(right_panel)
+        right_scroll_frame.pack(fill=BOTH, expand=True)
+        right_scroll_frame.grid_columnconfigure(0, weight=1)
+        right_scroll_frame.grid_columnconfigure(1, weight=0)
+
+        right_canvas = tk.Canvas(right_scroll_frame, highlightthickness=0, background="white")
+        right_scrollbar = ttk.Scrollbar(right_scroll_frame, orient="vertical", command=right_canvas.yview,
+                                         style="Secondary.Vertical.TScrollbar")
         right_content = ttkb.Frame(right_canvas)
 
         right_canvas.configure(yscrollcommand=right_scrollbar.set)
         self.right_canvas_window = right_canvas.create_window((0, 0), window=right_content, anchor="nw")
-        # 右侧面板用grid布局：画布占主区域，滚动条在最右列
-        right_panel.grid_columnconfigure(0, weight=1)
-        right_panel.grid_columnconfigure(1, weight=0)
         right_canvas.grid(row=0, column=0, sticky="nsew")
         right_scrollbar.grid(row=0, column=1, sticky="ns")
-        # 滚动条初始隐藏（grid_remove保留列宽，防止画布宽度跳动）
         right_scrollbar.grid_remove()
         self.right_canvas = right_canvas
         self.right_sb = right_scrollbar
@@ -327,53 +326,55 @@ class BatchImageCrop:
         right_scrollbar.bind("<Enter>", lambda e: self.show_right_scrollbar())
         right_scrollbar.bind("<Leave>", lambda e: self.schedule_hide_right_scrollbar())
 
-        # --- 图片列表（缩略图） ---
+        # --- 图片列表（缩略图）：只有这部分在滚动区内 ---
         ttkb.Label(right_content, text="图片列表", font=("Microsoft YaHei", 10, "bold")).pack(pady=(5, 2))
         self.count_label = ttkb.Label(right_content, text="共 0 张", bootstyle="secondary")
         self.count_label.pack()
 
-        # 缩略图滚动区域
         thumb_outer = ttkb.Frame(right_content)
         thumb_outer.pack(fill=BOTH, expand=True, pady=4)
+        thumb_outer.grid_columnconfigure(0, weight=1)
+        thumb_outer.grid_columnconfigure(1, weight=0)
 
         self.thumb_canvas = tk.Canvas(thumb_outer, highlightthickness=0, bg="#f0f0f0")
-        thumb_sb = tk.Scrollbar(thumb_outer, orient="vertical", command=self.thumb_canvas.yview)
-        self.thumb_canvas.configure(yscrollcommand=thumb_sb.set)
-        self.thumb_canvas.pack(side=LEFT, fill=BOTH, expand=True)
-        # 滚动条初始隐藏，鼠标悬停/滚动时自动显示
-        self.thumb_sb = thumb_sb
+        self.thumb_canvas.grid(row=0, column=0, sticky="nsew")
+
+        self.thumb_sb = ttk.Scrollbar(thumb_outer, orient="vertical", command=self.thumb_canvas.yview, style="Secondary.Vertical.TScrollbar")
+        self.thumb_canvas.configure(yscrollcommand=self.thumb_sb.set)
+        self.thumb_sb.grid(row=0, column=1, sticky="ns")
+        self.thumb_sb.grid_remove()
 
         self.thumb_inner = ttkb.Frame(self.thumb_canvas)
         self.thumb_canvas_window = self.thumb_canvas.create_window((0, 0), window=self.thumb_inner, anchor="nw")
         self.thumb_inner.bind("<Configure>", self._on_thumb_inner_configure)
         self.thumb_canvas.bind("<Configure>", self._on_thumb_canvas_configure)
-        # 鼠标滚轮绑定到缩略图区域（进入时列表滚动，离开时恢复画布缩放）
         self.thumb_canvas.bind("<Enter>", lambda e: self._thumb_mouse_enter())
         self.thumb_canvas.bind("<Leave>", lambda e: self._thumb_mouse_leave())
-        thumb_sb.bind("<Enter>", lambda e: self._thumb_mouse_enter())
-        thumb_sb.bind("<Leave>", lambda e: self._thumb_mouse_leave())
+        self.thumb_sb.bind("<Enter>", lambda e: self._thumb_mouse_enter())
+        self.thumb_sb.bind("<Leave>", lambda e: self._thumb_mouse_leave())
 
+        # ===== 下方固定控件区（不随列表滚动）=====
         # 列表按钮
-        btn_row = ttkb.Frame(right_content)
-        btn_row.pack(fill=X, pady=(0, 4))
+        btn_row = ttkb.Frame(right_panel)
+        btn_row.pack(fill=X, pady=(4, 4), padx=4)
         ttkb.Button(btn_row, text="清空", bootstyle="warning-outline", command=self.clear_list).pack(side=LEFT, expand=True, fill=X, padx=(0, 2))
         ttkb.Button(btn_row, text="删除选中", bootstyle="danger-outline", command=self.remove_selected).pack(side=LEFT, expand=True, fill=X, padx=(2, 0))
 
-        # --- 共享设置 ---
-        ttkb.Separator(right_content).pack(fill=X, pady=4)
-        share_lf = ttkb.LabelFrame(right_content, text="共享设置", padding=6)
+        # 共享设置
+        ttkb.Separator(right_panel).pack(fill=X, pady=2)
+        share_lf = ttkb.LabelFrame(right_panel, text="共享设置", padding=6)
         share_lf.pack(fill=X, padx=4, pady=2)
         ttkb.Checkbutton(share_lf, text="共享裁剪大小", variable=self.share_size_var,
                          command=self._on_share_toggle).pack(anchor=W)
         ttkb.Checkbutton(share_lf, text="共享裁剪位置", variable=self.share_pos_var,
                          command=self._on_share_toggle).pack(anchor=W)
 
-        # --- 变换面板 ---
-        ttkb.Separator(right_content).pack(fill=X, pady=4)
-        ttkb.Label(right_content, text="当前图片变换", font=("Microsoft YaHei", 10, "bold")).pack()
-        ttkb.Label(right_content, text="（先变换，再裁剪）", bootstyle="secondary").pack()
+        # 变换面板
+        ttkb.Separator(right_panel).pack(fill=X, pady=2)
+        ttkb.Label(right_panel, text="当前图片变换", font=("Microsoft YaHei", 10, "bold")).pack()
+        ttkb.Label(right_panel, text="（先变换，再裁剪）", bootstyle="secondary").pack()
 
-        transform_frame = ttkb.Frame(right_content, padding=6)
+        transform_frame = ttkb.Frame(right_panel, padding=6)
         transform_frame.pack(fill=X, pady=4)
 
         ttkb.Checkbutton(transform_frame, text="水平翻转", variable=self.flip_h_var,
@@ -393,6 +394,11 @@ class BatchImageCrop:
         ttkb.Button(transform_frame, text="复制变换到所有图片", bootstyle="info-outline",
                     command=self.copy_transform_to_all).pack(fill=X)
 
+        # 导出按钮（与上方按钮同宽）
+        ttkb.Separator(right_panel).pack(fill=X, pady=4)
+        ttkb.Button(right_panel, text="批量裁剪导出",
+                    command=self.batch_crop, bootstyle="info").pack(fill=X, padx=4, pady=(0, 6))
+
         # ===== 底部状态栏 =====
         bot_frame = ttkb.Frame(self.root, padding=(10, 5))
         bot_frame.pack(fill=X)
@@ -404,9 +410,6 @@ class BatchImageCrop:
         self.progress.pack(side=LEFT, padx=15)
         self.progress_label = ttkb.Label(bot_frame, text="", font=("Microsoft YaHei", 9))
         self.progress_label.pack(side=LEFT)
-
-        ttkb.Button(bot_frame, text="批量裁剪导出",
-                    command=self.batch_crop, bootstyle="info").pack(fill=X)
 
     # ===================== 缩略图管理 =====================
     def _on_thumb_inner_configure(self, event):
@@ -422,63 +425,52 @@ class BatchImageCrop:
         return "break"
 
     def _thumb_mouse_enter(self):
-        """鼠标进入缩略图区域：切换为列表滚动 + 显示滚动条"""
         self.canvas.unbind("<MouseWheel>")
         self.thumb_canvas.bind_all("<MouseWheel>", self._on_thumb_scroll)
         self.show_thumb_scrollbar()
 
     def _thumb_mouse_leave(self):
-        """鼠标离开缩略图区域：恢复画布缩放 + 隐藏滚动条"""
         self.thumb_canvas.unbind_all("<MouseWheel>")
         self.canvas.bind("<MouseWheel>", self.on_mouse_wheel)
         self.schedule_hide_thumb_scrollbar()
 
     # ===================== 滚动条自动隐藏 =====================
     def show_thumb_scrollbar(self):
-        """显示缩略图滚动条"""
         if self.thumb_sb and not self.thumb_sb.winfo_ismapped():
-            self.thumb_sb.pack(side=RIGHT, fill=Y)
+            self.thumb_sb.grid(row=0, column=1, sticky="ns")
 
     def hide_thumb_scrollbar(self):
-        """隐藏缩略图滚动条"""
         if self.thumb_sb and self.thumb_sb.winfo_ismapped():
-            self.thumb_sb.pack_forget()
+            self.thumb_sb.grid_remove()
 
     def schedule_hide_thumb_scrollbar(self):
-        """1秒后自动隐藏缩略图滚动条"""
         if self._thumb_scroll_hide_after:
             self.root.after_cancel(self._thumb_scroll_hide_after)
         self._thumb_scroll_hide_after = self.root.after(1000, self.hide_thumb_scrollbar)
 
     def show_right_scrollbar(self):
-        """显示右侧面板滚动条"""
         if self.right_sb and not self.right_sb.winfo_ismapped():
             self.right_sb.grid(row=0, column=1, sticky="ns")
 
     def hide_right_scrollbar(self):
-        """隐藏右侧面板滚动条（保留列宽）"""
         if self.right_sb and self.right_sb.winfo_ismapped():
             self.right_sb.grid_remove()
 
     def schedule_hide_right_scrollbar(self):
-        """1秒后自动隐藏右侧面板滚动条"""
         if self._right_scroll_hide_after:
             self.root.after_cancel(self._right_scroll_hide_after)
         self._right_scroll_hide_after = self.root.after(1000, self.hide_right_scrollbar)
 
     def _on_right_canvas_configure(self, event):
-        """右侧画布尺寸变化时，调整内部内容宽度"""
         self.right_canvas.itemconfig(self.right_canvas_window, width=event.width)
 
     def _on_right_scroll(self, event):
-        """右侧面板滚轮滚动"""
         self.right_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
         self.show_right_scrollbar()
         self.schedule_hide_right_scrollbar()
         return "break"
 
     def _generate_thumbnail(self, path):
-        """生成缩略图 PhotoImage"""
         try:
             img = Image.open(path)
             if img.mode in ('RGBA', 'P'):
@@ -489,7 +481,6 @@ class BatchImageCrop:
             return None
 
     def _refresh_thumb_list(self):
-        """重建缩略图列表"""
         for widget in self.thumb_inner.winfo_children():
             widget.destroy()
         self.thumbnails.clear()
@@ -500,14 +491,12 @@ class BatchImageCrop:
         self.count_label.config(text=f"共 {len(self.image_files)} 张")
 
     def _create_thumb_item(self, index, path):
-        """创建单个缩略图条目（左右排布：缩略图左，文件名右）"""
         item_frame = ttkb.Frame(self.thumb_inner, relief="flat", padding=3)
         item_frame.pack(fill=X, padx=2, pady=1)
 
-        # 左侧：缩略图
         thumb_frame = ttkb.Frame(item_frame)
         thumb_frame.pack(side=LEFT, padx=(0, 6))
-        
+
         thumb = self._generate_thumbnail(path)
         if thumb:
             self.thumbnails[index] = thumb
@@ -519,10 +508,9 @@ class BatchImageCrop:
             lbl = tk.Label(thumb_frame, text="?", width=10, height=3, bg="#ddd")
             lbl.pack()
 
-        # 右侧：文件名 + 变换标记
         info_frame = ttkb.Frame(item_frame)
         info_frame.pack(side=LEFT, fill=X, expand=True)
-        
+
         fname = os.path.basename(path)
         s = self.image_settings.get(index, PerImageSettings())
         tags = []
@@ -531,66 +519,55 @@ class BatchImageCrop:
         if s.rotate: tags.append(f"{s.rotate}°")
         tag_str = f" [{'+'.join(tags)}]" if tags else ""
 
-        name_lbl = ttkb.Label(info_frame, text=f"{fname}{tag_str}", 
+        name_lbl = ttkb.Label(info_frame, text=f"{fname}{tag_str}",
                               font=("Microsoft YaHei", 9), cursor="hand2", anchor=W)
         name_lbl.pack(anchor=W, pady=2)
         name_lbl.bind("<Button-1>", lambda e, idx=index: self._select_from_thumb(idx))
-        # 鼠标悬停显示完整文件名
-        ToolTip(name_lbl, static_text=f"{fname}\n{path}")
-        
-        # 序号标记
-        idx_lbl = ttkb.Label(info_frame, text=f"#{index+1}", 
+        # Tooltip 只显示文件名，不含路径
+        ToolTip(name_lbl, static_text=fname)
+
+        idx_lbl = ttkb.Label(info_frame, text=f"#{index+1}",
                              font=("Microsoft YaHei", 8), bootstyle="secondary")
         idx_lbl.pack(anchor=W)
 
-        # 存储引用以便高亮
         item_frame._index = index
         item_frame._name_lbl = name_lbl
         item_frame._thumb_lbl = lbl if thumb else None
 
     def _select_from_thumb(self, index):
-        """从缩略图选择图片"""
+        """从缩略图选择图片（保持裁剪框居中状态）"""
         self.current_index = index
         self.zoom = 1.0
-        self._locked_crop_cx = None
-        self._locked_crop_cy = None
         self._highlight_thumb(index)
         self._sync_transform_vars()
         self._render_canvas()
         self._update_info_bar()
 
     def select_prev_image(self):
-        """选择上一张图片（键盘上键）"""
+        """选择上一张图片（保持裁剪框居中状态）"""
         if not self.image_files or self.current_index <= 0:
             return
         self.current_index -= 1
         self.zoom = 1.0
-        self._locked_crop_cx = None
-        self._locked_crop_cy = None
         self._highlight_thumb(self.current_index)
         self._sync_transform_vars()
         self._load_current()
         self._update_info_bar()
-        # 确保缩略图可见
         self._scroll_thumb_into_view(self.current_index)
 
     def select_next_image(self):
-        """选择下一张图片（键盘下键）"""
+        """选择下一张图片（保持裁剪框居中状态）"""
         if not self.image_files or self.current_index >= len(self.image_files) - 1:
             return
         self.current_index += 1
         self.zoom = 1.0
-        self._locked_crop_cx = None
-        self._locked_crop_cy = None
         self._highlight_thumb(self.current_index)
         self._sync_transform_vars()
         self._load_current()
         self._update_info_bar()
-        # 确保缩略图可见
         self._scroll_thumb_into_view(self.current_index)
 
     def _scroll_thumb_into_view(self, index):
-        """滚动缩略图列表使指定索引可见"""
         children = self.thumb_inner.winfo_children()
         if 0 <= index < len(children):
             widget = children[index]
@@ -600,7 +577,6 @@ class BatchImageCrop:
             )
 
     def _highlight_thumb(self, selected_index):
-        """高亮当前选中的缩略图"""
         for widget in self.thumb_inner.winfo_children():
             idx = getattr(widget, '_index', -1)
             if idx == selected_index:
@@ -611,7 +587,6 @@ class BatchImageCrop:
                 widget['relief'] = "flat"
 
     def _update_all_thumbs(self):
-        """更新所有缩略图的变换标记"""
         children = self.thumb_inner.winfo_children()
         for widget in children:
             idx = getattr(widget, '_index', -1)
@@ -669,7 +644,6 @@ class BatchImageCrop:
             self._highlight_thumb(self.current_index)
 
     def _init_crop_defaults(self):
-        """为没有初始化的图片设置默认居中裁剪"""
         for i in range(len(self.image_files)):
             s = self.image_settings.get(i)
             if s is None:
@@ -704,7 +678,6 @@ class BatchImageCrop:
             return
         idx = self.current_index
         self.image_files.pop(idx)
-        # 重建 settings 和 thumbnails 索引
         new_settings = {}
         for i in range(len(self.image_files)):
             old_i = i if i < idx else i + 1
@@ -713,6 +686,8 @@ class BatchImageCrop:
             else:
                 new_settings[i] = PerImageSettings()
         self.image_settings = new_settings
+        self._locked_crop_cx = None
+        self._locked_crop_cy = None
         if self.current_index >= len(self.image_files):
             self.current_index = len(self.image_files) - 1
         self._refresh_thumb_list()
@@ -757,14 +732,12 @@ class BatchImageCrop:
 
     # ===================== 变换操作 =====================
     def _sync_transform_vars(self):
-        """从 settings 同步到 UI 变量"""
         s = self._get_current_settings()
         self.flip_h_var.set(s.flip_h)
         self.flip_v_var.set(s.flip_v)
         self.rotate_var.set(str(s.rotate))
 
     def on_transform_change(self):
-        """UI 变量变化 -> 保存到 settings -> 立即刷新预览"""
         if self.current_index < 0:
             return
         s = self._get_current_settings()
@@ -775,13 +748,11 @@ class BatchImageCrop:
         except ValueError:
             s.rotate = 0
         self.image_settings[self.current_index] = s
-        # 立即重新加载图片（因为变换改变了图片方向）并刷新
         self._reload_current_image()
         self._update_all_thumbs()
         self._render_canvas()
 
     def _reload_current_image(self):
-        """重新加载当前图片以反映变换"""
         if self.current_index < 0:
             return
         path = self.image_files[self.current_index]
@@ -815,14 +786,15 @@ class BatchImageCrop:
                 raise ValueError
             self.ratio_w = w
             self.ratio_h = h
-            # 重新居中所有图片的裁剪框
             self._recalc_all_crop_positions()
+            self._locked_crop_cx = None
+            self._locked_crop_cy = None
             self._render_canvas()
+            self._update_info_bar()
         except (ValueError, ZeroDivisionError):
             messagebox.showerror("错误", "请输入有效的正数")
 
     def _recalc_all_crop_positions(self):
-        """重新计算所有图片的裁剪框位置（居中）"""
         for i in range(len(self.image_files)):
             s = self.image_settings.get(i, PerImageSettings())
             try:
@@ -845,7 +817,6 @@ class BatchImageCrop:
         self._render_canvas()
 
     def _render_canvas(self):
-        """绘制画布：图片 + 裁剪框遮罩 + 缩放手柄"""
         self.canvas.delete("all")
         cw = self.canvas.winfo_width()
         ch = self.canvas.winfo_height()
@@ -861,7 +832,6 @@ class BatchImageCrop:
         img = self._apply_transform(self.original_image, s)
         iw, ih = img.size
 
-        # 计算显示缩放（尽可能填满可用区域）
         margin = 20
         avail_w = cw - margin * 2
         avail_h = ch - margin * 2
@@ -871,29 +841,18 @@ class BatchImageCrop:
         dw = max(1, int(iw * self.scale))
         dh = max(1, int(ih * self.scale))
 
-        # 计算显示位置
-        if self._center_crop_after_drag and self.original_image is not None:
-            # 拖拽结束后首次渲染：锁定裁剪框中心并居中显示
-            left_rel, top_rel, w_rel, h_rel = self._get_crop_rect_rel(s, iw, ih)
-            self._locked_crop_cx = left_rel + w_rel / 2
-            self._locked_crop_cy = top_rel + h_rel / 2
-            self._center_crop_after_drag = False
-
+        # 计算显示位置：锁定裁剪框中心保持居中
         if self._locked_crop_cx is not None:
-            # 将锁定的裁剪框中心居中在画布，允许图片超出画布（隐藏超出部分）
-            # 跨缩放/窗口调整均自动保持裁剪框居中
             self.pad_x = int(cw / 2 - self._locked_crop_cx * dw)
             self.pad_y = int(ch / 2 - self._locked_crop_cy * dh)
         else:
             self.pad_x = (cw - dw) // 2
             self.pad_y = (ch - dh) // 2
 
-        # 缩放图片用于显示
         disp = img.resize((dw, dh), Image.LANCZOS)
         self.display_photo = ImageTk.PhotoImage(disp)
         self.canvas.create_image(self.pad_x, self.pad_y, anchor=tk.NW, image=self.display_photo, tags="img")
 
-        # 计算裁剪框画布坐标
         left_rel, top_rel, w_rel, h_rel = self._get_crop_rect_rel(s, iw, ih)
         box_x = self.pad_x + int(left_rel * dw)
         box_y = self.pad_y + int(top_rel * dh)
@@ -901,42 +860,35 @@ class BatchImageCrop:
         box_h = max(1, int(h_rel * dh))
 
         # 绘制遮罩
-        # 上
         if box_y > self.pad_y:
             self.canvas.create_rectangle(self.pad_x, self.pad_y, self.pad_x + dw, box_y,
                                           fill="black", stipple="gray50", outline="")
-        # 下
         box_bottom = box_y + box_h
         if box_bottom < self.pad_y + dh:
             self.canvas.create_rectangle(self.pad_x, box_bottom, self.pad_x + dw, self.pad_y + dh,
                                           fill="black", stipple="gray50", outline="")
-        # 左
         if box_x > self.pad_x:
             self.canvas.create_rectangle(self.pad_x, box_y, box_x, box_bottom,
                                           fill="black", stipple="gray50", outline="")
-        # 右
         box_right = box_x + box_w
         if box_right < self.pad_x + dw:
             self.canvas.create_rectangle(box_right, box_y, self.pad_x + dw, box_bottom,
                                           fill="black", stipple="gray50", outline="")
 
-        # 裁剪框边框
         self.canvas.create_rectangle(box_x, box_y, box_right, box_bottom,
                                       outline="#00ff88", width=2)
 
-        # 绘制四个角落的缩放手柄
         hs = HANDLE_SIZE
         corners = [
-            (box_x, box_y),                # NW
-            (box_x + box_w, box_y),        # NE
-            (box_x, box_bottom),           # SW
-            (box_x + box_w, box_bottom),   # SE
+            (box_x, box_y),
+            (box_x + box_w, box_y),
+            (box_x, box_bottom),
+            (box_x + box_w, box_bottom),
         ]
         for cx, cy in corners:
             self.canvas.create_rectangle(cx - hs, cy - hs, cx + hs, cy + hs,
                                           fill="#00ff88", outline="#005522", width=1)
 
-        # 尺寸标注
         px_w = int(w_rel * iw)
         px_h = int(h_rel * ih)
         info_text = f"输出: {px_w}×{px_h} px"
@@ -952,7 +904,6 @@ class BatchImageCrop:
 
     # ===================== 鼠标交互 =====================
     def _hit_test(self, mx, my):
-        """检测鼠标命中区域: 'nw','ne','sw','se','move', None"""
         if self.original_image is None:
             return None
         s = self._get_current_settings()
@@ -970,9 +921,8 @@ class BatchImageCrop:
         box_right = box_x + box_w
         box_bottom = box_y + box_h
 
-        hs = HANDLE_SIZE + 4  # 扩大热区便于点击
+        hs = HANDLE_SIZE + 4
 
-        # 检查四个角落
         if abs(mx - box_x) < hs and abs(my - box_y) < hs:
             return 'nw'
         if abs(mx - box_right) < hs and abs(my - box_y) < hs:
@@ -982,7 +932,6 @@ class BatchImageCrop:
         if abs(mx - box_right) < hs and abs(my - box_bottom) < hs:
             return 'se'
 
-        # 检查是否在裁剪框内（移动）
         if box_x <= mx <= box_right and box_y <= my <= box_bottom:
             return 'move'
 
@@ -1018,7 +967,6 @@ class BatchImageCrop:
         dy = (event.y - self.drag_start_y) / dh if dh > 0 else 0
 
         if self.drag_mode == 'move':
-            # 移动裁剪框
             max_w, max_h = self._get_max_crop_ratios(iw, ih)
             cw = max_w * s.crop_scale
             ch = max_h * s.crop_scale
@@ -1028,17 +976,13 @@ class BatchImageCrop:
             self._sync_shared('position')
 
         elif self.drag_mode in ('se', 'sw', 'ne', 'nw'):
-            # 缩放裁剪框
             max_w, max_h = self._get_max_crop_ratios(iw, ih)
             if max_w <= 0 or max_h <= 0:
                 return
 
-            # 根据拖拽角落计算新尺寸
-            # 使用到对角角落的距离来确定新 scale
             if self.drag_mode == 'se':
                 new_w_rel = (self.drag_init_left + max_w * self.drag_init_scale) + dx - self.drag_init_left
             elif self.drag_mode == 'sw':
-                new_w_rel = (self.drag_init_left + max_w * self.drag_init_scale) - (self.drag_init_left + dx)
                 new_w_rel = max_w * self.drag_init_scale - dx
             elif self.drag_mode == 'ne':
                 new_w_rel = (self.drag_init_left + max_w * self.drag_init_scale) + dx - self.drag_init_left
@@ -1047,7 +991,6 @@ class BatchImageCrop:
             else:
                 new_w_rel = max_w * self.drag_init_scale
 
-            # 计算新 scale
             if max_w > 0:
                 new_scale = new_w_rel / max_w
             else:
@@ -1056,32 +999,26 @@ class BatchImageCrop:
             new_scale = max(0.1, min(1.0, new_scale))
             s.crop_scale = new_scale
 
-            # 调整位置，保持对角角落不动
             actual_w = max_w * new_scale
             actual_h = max_h * new_scale
 
             if self.drag_mode == 'se':
-                # NW corner stays fixed
                 s.crop_left = self.drag_init_left
                 s.crop_top = self.drag_init_top
             elif self.drag_mode == 'sw':
-                # NE corner stays fixed -> left changes
                 old_right = self.drag_init_left + max_w * self.drag_init_scale
                 s.crop_left = old_right - actual_w
                 s.crop_top = self.drag_init_top
             elif self.drag_mode == 'ne':
-                # SW corner stays fixed
                 s.crop_left = self.drag_init_left
                 old_bottom = self.drag_init_top + max_h * self.drag_init_scale
                 s.crop_top = old_bottom - actual_h
             elif self.drag_mode == 'nw':
-                # SE corner stays fixed
                 old_right = self.drag_init_left + max_w * self.drag_init_scale
                 old_bottom = self.drag_init_top + max_h * self.drag_init_scale
                 s.crop_left = old_right - actual_w
                 s.crop_top = old_bottom - actual_h
 
-            # 边界约束
             s.crop_left = max(0, min(s.crop_left, 1.0 - actual_w))
             s.crop_top = max(0, min(s.crop_top, 1.0 - actual_h))
 
@@ -1095,14 +1032,18 @@ class BatchImageCrop:
 
     def on_mouse_up(self, event):
         if self.drag_mode and self.original_image is not None:
-            # 拖拽结束后，将裁剪框居中显示在预览区
-            self._center_crop_after_drag = True
+            # 拖拽结束后锁定裁剪框中心，使预览居中显示
+            s = self._get_current_settings()
+            img = self._apply_transform(self.original_image, s)
+            iw, ih = img.size
+            left_rel, top_rel, w_rel, h_rel = self._get_crop_rect_rel(s, iw, ih)
+            self._locked_crop_cx = left_rel + w_rel / 2
+            self._locked_crop_cy = top_rel + h_rel / 2
             self._render_canvas()
             self._update_info_bar()
         self.drag_mode = None
 
     def on_mouse_wheel(self, event):
-        """滚轮缩放预览视图"""
         if self.original_image is None:
             return
         if event.delta > 0:
@@ -1112,7 +1053,6 @@ class BatchImageCrop:
         self._render_canvas()
 
     def nudge(self, dx, dy):
-        """键盘微调裁剪框位置"""
         if self.original_image is None or self.current_index < 0:
             return
         s = self._get_current_settings()
@@ -1130,49 +1070,11 @@ class BatchImageCrop:
         s.crop_top = max(0, min(s.crop_top + ry, 1.0 - ch))
         self.image_settings[self.current_index] = s
         self._sync_shared('position')
+        # 键盘微调重置居中锁定
         self._locked_crop_cx = None
         self._locked_crop_cy = None
         self._render_canvas()
         self._update_info_bar()
-
-    # ===================== 比例设置 =====================
-    def apply_ratio(self):
-        try:
-            w = float(self.size_w_var.get())
-            h = float(self.size_h_var.get())
-            if w <= 0 or h <= 0:
-                raise ValueError
-            self.ratio_w = w
-            self.ratio_h = h
-            self._recalc_all_crop_positions()
-            self._locked_crop_cx = None
-            self._locked_crop_cy = None
-            self._render_canvas()
-            self._update_info_bar()
-        except (ValueError, ZeroDivisionError):
-            messagebox.showerror("错误", "请输入有效的正数")
-
-    def _recalc_all_crop_positions(self):
-        """比例变化后重新居中所有图片的裁剪框"""
-        for i in range(len(self.image_files)):
-            s = self.image_settings.get(i, PerImageSettings())
-            try:
-                img = Image.open(self.image_files[i])
-                if img.mode in ('RGBA', 'P'):
-                    img = img.convert('RGB')
-                ts = self._apply_transform(img, s)
-                iw, ih = ts.size
-                max_w, max_h = self._get_max_crop_ratios(iw, ih)
-                cw = max_w * s.crop_scale
-                ch = max_h * s.crop_scale
-                s.crop_left = max(0, min(s.crop_left, 1.0 - cw))
-                s.crop_top = max(0, min(s.crop_top, 1.0 - ch))
-                # 居中
-                s.crop_left = (1.0 - cw) / 2
-                s.crop_top = (1.0 - ch) / 2
-                self.image_settings[i] = s
-            except Exception:
-                pass
 
     # ===================== 列表选择 =====================
     def browse_output(self):
