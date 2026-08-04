@@ -303,7 +303,7 @@ class BatchImageCrop:
         right_panel.pack_propagate(False)
 
         # 右侧内容滚动区
-        right_canvas = tk.Canvas(right_panel, highlightthickness=0, bg=right_panel.cget("bg"))
+        right_canvas = tk.Canvas(right_panel, highlightthickness=0, background="white")
         right_scrollbar = tk.Scrollbar(right_panel, orient="vertical", command=right_canvas.yview)
         right_content = ttkb.Frame(right_canvas)
 
