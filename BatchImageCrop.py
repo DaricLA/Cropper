@@ -22,6 +22,37 @@ THUMB_MAX_H = 70
 HANDLE_SIZE = 8  # 角落拖拽热区半径(px)
 
 
+class ToolTip:
+    """简易悬浮提示框"""
+    def __init__(self, widget, text_getter=None, static_text=None):
+        self.widget = widget
+        self.text_getter = text_getter
+        self.static_text = static_text
+        self.tip_window = None
+        widget.bind("<Enter>", self._show)
+        widget.bind("<Leave>", self._hide)
+
+    def _show(self, event=None):
+        text = self.text_getter() if self.text_getter else self.static_text
+        if not text:
+            return
+        # 计算位置
+        x = self.widget.winfo_rootx() + self.widget.winfo_width() + 5
+        y = self.widget.winfo_rooty()
+        self.tip_window = tw = tk.Toplevel(self.widget)
+        tw.wm_overrideredirect(True)
+        tw.wm_geometry(f"+{x}+{y}")
+        label = tk.Label(tw, text=text, justify="left",
+                         background="#ffffe0", relief="solid", borderwidth=1,
+                         font=("Microsoft YaHei", 9), wraplength=400)
+        label.pack(ipadx=4, ipady=2)
+
+    def _hide(self, event=None):
+        if self.tip_window:
+            self.tip_window.destroy()
+            self.tip_window = None
+
+
 class PerImageSettings:
     """每张图的独立设置"""
     def __init__(self):
@@ -37,8 +68,8 @@ class BatchImageCrop:
     def __init__(self, root):
         self.root = root
         self.root.title("MBO/PBO批量图片剪裁工具 v2.1")
-        self.root.geometry("1400x900")
-        self.root.minsize(1300, 850)
+        self.root.geometry("1500x950")
+        self.root.minsize(1400, 900)
 
         # --- 数据 ---
         self.image_files = []
@@ -78,17 +109,6 @@ class BatchImageCrop:
         # 共享设置
         self.share_size_var = tk.BooleanVar(value=True)
         self.share_pos_var = tk.BooleanVar(value=False)
-
-        # 配置导出按钮加粗样式（从 Info.TButton 继承颜色和状态）
-        style = ttkb.Style()
-        style.configure("Export.TButton", font=("Microsoft YaHei", 10, "bold"))
-        style.map("Export.TButton",
-                  foreground=style.lookup("Info.TButton", "foreground"),
-                  background=style.lookup("Info.TButton", "background"),
-                  bordercolor=style.lookup("Info.TButton", "bordercolor"),
-                  darkcolor=style.lookup("Info.TButton", "darkcolor"),
-                  lightcolor=style.lookup("Info.TButton", "lightcolor"),
-                  focuscolor=style.lookup("Info.TButton", "focuscolor"))
 
         self.build_ui()
 
@@ -145,11 +165,38 @@ class BatchImageCrop:
         return img
 
     # ===================== 共享逻辑 =====================
+    def _get_target_crop_pixels(self, src_settings):
+        """从当前图片计算目标裁剪像素尺寸 (target_w, target_h)"""
+        src_img = Image.open(self.image_files[self.current_index])
+        if src_img.mode in ('RGBA', 'P'):
+            src_img = src_img.convert('RGB')
+        src_img = self._apply_transform(src_img, src_settings)
+        iw, ih = src_img.size
+        max_w, max_h = self._get_max_crop_ratios(iw, ih)
+        target_w = max_w * src_settings.crop_scale * iw
+        target_h = max_h * src_settings.crop_scale * ih
+        return target_w, target_h
+
+    def _compute_scale_for_pixels(self, target_w, target_h, iw, ih):
+        """根据目标像素尺寸和图片尺寸，反算 crop_scale"""
+        max_w, max_h = self._get_max_crop_ratios(iw, ih)
+        if max_w <= 0 or max_h <= 0:
+            return 1.0
+        # crop_scale 需要同时满足宽和高约束，取较小值确保不超出
+        scale_w = target_w / (max_w * iw)
+        scale_h = target_h / (max_h * ih)
+        new_scale = min(scale_w, scale_h)
+        return max(0.1, min(1.0, new_scale))
+
     def _sync_shared(self, changed):
         """根据共享模式同步设置到所有图片"""
         if self.current_index < 0:
             return
         src = self._get_current_settings()
+        # 如果共享大小，先从当前图片计算目标像素尺寸
+        target_w, target_h = None, None
+        if changed == 'size' and self.share_size_var.get():
+            target_w, target_h = self._get_target_crop_pixels(src)
         for i in range(len(self.image_files)):
             if i == self.current_index:
                 continue
@@ -158,7 +205,16 @@ class BatchImageCrop:
                 s.crop_left = src.crop_left
                 s.crop_top = src.crop_top
             if changed == 'size' and self.share_size_var.get():
-                s.crop_scale = src.crop_scale
+                # 根据目标像素尺寸反算该图片需要的 crop_scale
+                try:
+                    img = Image.open(self.image_files[i])
+                    if img.mode in ('RGBA', 'P'):
+                        img = img.convert('RGB')
+                    img = self._apply_transform(img, s)
+                    iw, ih = img.size
+                    s.crop_scale = self._compute_scale_for_pixels(target_w, target_h, iw, ih)
+                except Exception:
+                    pass
             self.image_settings[i] = s
 
     def _on_share_toggle(self):
@@ -173,9 +229,18 @@ class BatchImageCrop:
                 s.crop_top = src.crop_top
                 self.image_settings[i] = s
         if self.share_size_var.get():
+            target_w, target_h = self._get_target_crop_pixels(src)
             for i in range(len(self.image_files)):
                 s = self.image_settings.get(i, PerImageSettings())
-                s.crop_scale = src.crop_scale
+                try:
+                    img = Image.open(self.image_files[i])
+                    if img.mode in ('RGBA', 'P'):
+                        img = img.convert('RGB')
+                    img = self._apply_transform(img, s)
+                    iw, ih = img.size
+                    s.crop_scale = self._compute_scale_for_pixels(target_w, target_h, iw, ih)
+                except Exception:
+                    pass
                 self.image_settings[i] = s
         self._render_canvas()
 
@@ -223,7 +288,7 @@ class BatchImageCrop:
         self.canvas.bind("<MouseWheel>", self.on_mouse_wheel)
 
         # 右侧面板
-        right_panel = ttkb.Frame(mid_frame, width=250)
+        right_panel = ttkb.Frame(mid_frame, width=260)
         right_panel.pack(fill=Y, side=LEFT, padx=(8, 0))
         right_panel.pack_propagate(False)
 
@@ -237,10 +302,11 @@ class BatchImageCrop:
         thumb_outer.pack(fill=BOTH, expand=True, pady=4)
 
         self.thumb_canvas = tk.Canvas(thumb_outer, highlightthickness=0, bg="#f0f0f0")
-        thumb_sb = ttkb.Scrollbar(thumb_outer, orient="vertical", command=self.thumb_canvas.yview)
+        thumb_sb = tk.Scrollbar(thumb_outer, orient="vertical", command=self.thumb_canvas.yview)
         self.thumb_canvas.configure(yscrollcommand=thumb_sb.set)
         self.thumb_canvas.pack(side=LEFT, fill=BOTH, expand=True)
         thumb_sb.pack(side=RIGHT, fill=Y)
+        self.thumb_scrollbar = thumb_sb
 
         self.thumb_inner = ttkb.Frame(self.thumb_canvas)
         self.thumb_canvas_window = self.thumb_canvas.create_window((0, 0), window=self.thumb_inner, anchor="nw")
@@ -260,7 +326,7 @@ class BatchImageCrop:
 
         # --- 共享设置 ---
         ttkb.Separator(right_panel).pack(fill=X, pady=4)
-        share_lf = ttkb.LabelFrame(right_panel, text="共享设置（勾选=所有图片同步）", padding=6)
+        share_lf = ttkb.LabelFrame(right_panel, text="共享设置", padding=6)
         share_lf.pack(fill=X, padx=4, pady=2)
         ttkb.Checkbutton(share_lf, text="共享裁剪大小", variable=self.share_size_var,
                          command=self._on_share_toggle).pack(anchor=W)
@@ -305,8 +371,7 @@ class BatchImageCrop:
         self.progress_label.pack(side=LEFT)
 
         ttkb.Button(bot_frame, text="批量裁剪导出",
-                    command=self.batch_crop, width=18,
-                    style="Export.TButton").pack(side=RIGHT)
+                    command=self.batch_crop, bootstyle="info").pack(side=RIGHT, padx=5)
 
     # ===================== 缩略图管理 =====================
     def _on_thumb_inner_configure(self, event):
@@ -387,6 +452,8 @@ class BatchImageCrop:
                               font=("Microsoft YaHei", 9), cursor="hand2", anchor=W)
         name_lbl.pack(anchor=W, pady=2)
         name_lbl.bind("<Button-1>", lambda e, idx=index: self._select_from_thumb(idx))
+        # 鼠标悬停显示完整文件名
+        ToolTip(name_lbl, static_text=f"{fname}\n{path}")
         
         # 序号标记
         idx_lbl = ttkb.Label(info_frame, text=f"#{index+1}", 
@@ -890,21 +957,17 @@ class BatchImageCrop:
             actual_h = max_h * new_scale
 
             if self.drag_mode == 'se':
-                # NW corner stays fixed
                 s.crop_left = self.drag_init_left
                 s.crop_top = self.drag_init_top
             elif self.drag_mode == 'sw':
-                # NE corner stays fixed -> left changes
                 old_right = self.drag_init_left + max_w * self.drag_init_scale
                 s.crop_left = old_right - actual_w
                 s.crop_top = self.drag_init_top
             elif self.drag_mode == 'ne':
-                # SW corner stays fixed
                 s.crop_left = self.drag_init_left
                 old_bottom = self.drag_init_top + max_h * self.drag_init_scale
                 s.crop_top = old_bottom - actual_h
             elif self.drag_mode == 'nw':
-                # SE corner stays fixed
                 old_right = self.drag_init_left + max_w * self.drag_init_scale
                 old_bottom = self.drag_init_top + max_h * self.drag_init_scale
                 s.crop_left = old_right - actual_w
