@@ -7,6 +7,7 @@ MBO/PBO批量图片剪裁工具 v2.3
 - 零压缩无损输出，直接截取原图像素
 - 绿色免安装，ttkbootstrap flatly 主题
 - 键盘上下键切换图片，滚轮独立控制列表/预览
+- 支持拖拽图片文件到裁剪区或列表区直接导入
 """
 
 import tkinter as tk
@@ -16,6 +17,13 @@ import ttkbootstrap as ttkb
 from ttkbootstrap.constants import *
 from PIL import Image, ImageTk
 import os
+import re
+
+try:
+    from tkinterdnd2 import TkinterDnD, DND_FILES
+    HAS_DND = True
+except ImportError:
+    HAS_DND = False
 
 SUPPORTED_FORMATS = ('.png', '.jpg', '.jpeg', '.bmp', '.webp', '.tiff', '.tif', '.gif')
 THUMB_MAX_W = 100
@@ -98,10 +106,10 @@ class BatchImageCrop:
         self.drag_init_scale = 1.0
 
         # UI 变量
-        self.size_w_var = tk.StringVar(value="10")
-        self.size_h_var = tk.StringVar(value="7")
+        self.size_w_var = tk.StringVar(value="8")
+        self.size_h_var = tk.StringVar(value="6")
         self.output_dir_var = tk.StringVar()
-        self.suffix_var = tk.StringVar(value="_cropped")
+        self.suffix_var = tk.StringVar(value="")
         self.flip_h_var = tk.BooleanVar(value=False)
         self.flip_v_var = tk.BooleanVar(value=False)
         self.rotate_var = tk.StringVar(value="0")
@@ -118,6 +126,10 @@ class BatchImageCrop:
         self._crop_centered = False
 
         self.build_ui()
+
+        # 拖拽导入
+        if HAS_DND:
+            self._setup_dnd()
 
         # 键盘绑定
         self.root.bind('<Up>', lambda e: self.select_prev_image())
@@ -589,6 +601,43 @@ class BatchImageCrop:
             if name_lbl:
                 name_lbl.config(text=f"{fname}{tag_str}")
         self._highlight_thumb(self.current_index)
+
+    # ===================== 拖拽导入 =====================
+    def _setup_dnd(self):
+        """注册拖拽导入目标区域"""
+        self.canvas.drop_target_register(DND_FILES)
+        self.canvas.dnd_bind('<<Drop>>', self._on_dnd_drop)
+        self.right_canvas.drop_target_register(DND_FILES)
+        self.right_canvas.dnd_bind('<<Drop>>', self._on_dnd_drop)
+        self.thumb_canvas.drop_target_register(DND_FILES)
+        self.thumb_canvas.dnd_bind('<<Drop>>', self._on_dnd_drop)
+
+    def _parse_dnd_files(self, data):
+        """解析拖拽文件路径，处理含空格路径的{}包裹"""
+        files = re.findall(r'\{([^}]*)\}|(\S+)', data)
+        result = []
+        for f in files:
+            path = f[0] if f[0] else f[1]
+            if os.path.isfile(path):
+                result.append(path)
+        return result
+
+    def _on_dnd_drop(self, event):
+        """拖拽文件放入处理"""
+        files = self._parse_dnd_files(event.data)
+        added = 0
+        for p in files:
+            if p not in self.image_files and os.path.splitext(p)[1].lower() in SUPPORTED_FORMATS:
+                self.image_files.append(p)
+                self.image_settings[len(self.image_files) - 1] = PerImageSettings()
+                added += 1
+        if added:
+            self._init_crop_defaults()
+            self._refresh_thumb_list()
+            if self.current_index < 0:
+                self.current_index = 0
+            self._load_current()
+            self._highlight_thumb(self.current_index)
 
     # ===================== 文件操作 =====================
     def add_images(self):
@@ -1148,7 +1197,11 @@ class BatchImageCrop:
 
 
 def main():
-    root = ttkb.Window(themename="flatly")
+    if HAS_DND:
+        root = TkinterDnD.Tk()
+        ttkb.Style("flatly")
+    else:
+        root = ttkb.Window(themename="flatly")
     app = BatchImageCrop(root)
     root.mainloop()
 
