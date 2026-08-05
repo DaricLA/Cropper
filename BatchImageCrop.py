@@ -1,5 +1,5 @@
 """
-MBO/PBO批量图片剪裁工具 v2.3
+MBO/PBO批量图片剪裁工具 v2.4
 - 批量加载图片，缩略图预览列表（左右排布节省空间）
 - 裁剪框固定比例、大小可调（拖拽角落缩放）
 - 每张图独立裁剪位置/大小，可选共享
@@ -75,7 +75,7 @@ class PerImageSettings:
 class BatchImageCrop:
     def __init__(self, root):
         self.root = root
-        self.root.title("MBO/PBO批量图片剪裁工具 v2.3")
+        self.root.title("MBO/PBO批量图片剪裁工具 v2.4")
         self.root.geometry("1500x950")
         self.root.minsize(1500, 950)
 
@@ -1198,6 +1198,15 @@ class BatchImageCrop:
 
 def main():
     if HAS_DND:
+        # 手动开启高 DPI 感知，否则 TkinterDnD.Tk() 窗口会比 ttkb.Window 大很多
+        import ctypes
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(1)
+        except Exception:
+            try:
+                ctypes.windll.user32.SetProcessDPIAware()
+            except Exception:
+                pass
         root = TkinterDnD.Tk()
         ttkb.Style("flatly")
     else:
