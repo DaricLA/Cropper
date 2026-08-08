@@ -1,11 +1,13 @@
 """
-MBO/PBO批量图片剪裁工具 v2.5
+MBO/PBO批量图片剪裁工具 v2.6
 - 批量加载图片，缩略图预览列表（左右排布节省空间）
 - 裁剪框固定比例、大小可调（拖拽角落缩放）
 - 每张图独立裁剪位置/大小，可选共享
 - 单图独立翻转/旋转，实时预览
 - 零压缩无损输出，直接截取原图像素
 - 批量重命名（序号/替换/模板/插入删除/大小写），实时预览+冲突检测+撤销
+- 插入/删除支持4种子模式：指定位置插入、末尾插入、指定位置删除、删除指定文本
+- 预览区双列对齐，旧名→新名单行显示，颜色区分（绿色=将改名/红色=冲突/灰色=无变化）
 - 绿色免安装，ttkbootstrap flatly 主题
 - 键盘上下键切换图片，滚轮独立控制列表/预览
 - 支持拖拽图片文件到裁剪区或列表区直接导入
@@ -75,7 +77,7 @@ class PerImageSettings:
 class BatchImageCrop:
     def __init__(self, root):
         self.root = root
-        self.root.title("MBO/PBO批量图片剪裁工具 v2.5")
+        self.root.title("MBO/PBO批量图片剪裁工具 v2.6")
         self.root.geometry("1500x950")
         self.root.minsize(1500, 950)
 
@@ -126,8 +128,12 @@ class BatchImageCrop:
         self.rename_replace_var = tk.StringVar(value="")
         self.rename_regex_var = tk.BooleanVar(value=False)
         self.rename_template_var = tk.StringVar(value="{name}_{num:03d}")
+        self.rename_submode_var = tk.StringVar(value="insert_pos")
         self.rename_insert_pos_var = tk.StringVar(value="0")
         self.rename_insert_text_var = tk.StringVar(value="")
+        self.rename_delete_text_var = tk.StringVar(value="")
+        self.rename_delete_start_var = tk.StringVar(value="0")
+        self.rename_delete_count_var = tk.StringVar(value="1")
         self.rename_case_var = tk.StringVar(value="lower")
         self.rename_undo_stack = []
 
@@ -534,11 +540,57 @@ class BatchImageCrop:
         ttkb.Label(parent, text="{name}原文件名 {num}序号 {ext}扩展名 {date}日期", bootstyle="secondary").pack(side=LEFT)
 
     def _build_insert_params(self, parent):
-        ttkb.Label(parent, text="位置:").pack(side=LEFT, padx=(0, 2))
-        ttkb.Entry(parent, textvariable=self.rename_insert_pos_var, width=4).pack(side=LEFT, padx=(0, 4))
-        ttkb.Label(parent, text="(0=开头, -1=扩展名前)", bootstyle="secondary").pack(side=LEFT, padx=(0, 10))
-        ttkb.Label(parent, text="文本:").pack(side=LEFT, padx=(0, 2))
-        ttkb.Entry(parent, textvariable=self.rename_insert_text_var, width=14).pack(side=LEFT)
+        # 子模式选择行
+        sub_row = ttkb.Frame(parent)
+        sub_row.pack(fill=X, pady=(0, 4))
+        ttkb.Label(sub_row, text="操作:").pack(side=LEFT, padx=(0, 4))
+        submodes = [("指定位置插入", "insert_pos"), ("末尾插入", "insert_end"),
+                    ("指定位置删除", "delete_pos"), ("删除指定文本", "delete_text")]
+        for text, val in submodes:
+            ttkb.Radiobutton(sub_row, text=text, variable=self.rename_submode_var,
+                             value=val, command=self._on_insert_submode_change).pack(side=LEFT, padx=4)
+
+        # 指定位置插入面板
+        self.ins_pos_frame = ttkb.Frame(parent)
+        ttkb.Label(self.ins_pos_frame, text="位置:").pack(side=LEFT, padx=(0, 2))
+        ttkb.Entry(self.ins_pos_frame, textvariable=self.rename_insert_pos_var, width=4).pack(side=LEFT, padx=(0, 6))
+        ttkb.Label(self.ins_pos_frame, text="(0=开头, -1=扩展名前)", bootstyle="secondary").pack(side=LEFT, padx=(0, 10))
+        ttkb.Label(self.ins_pos_frame, text="文本:").pack(side=LEFT, padx=(0, 2))
+        ttkb.Entry(self.ins_pos_frame, textvariable=self.rename_insert_text_var, width=14).pack(side=LEFT)
+
+        # 末尾插入面板
+        self.ins_end_frame = ttkb.Frame(parent)
+        ttkb.Label(self.ins_end_frame, text="插入文本:").pack(side=LEFT, padx=(0, 2))
+        ttkb.Entry(self.ins_end_frame, textvariable=self.rename_insert_text_var, width=20).pack(side=LEFT, padx=(0, 10))
+        ttkb.Label(self.ins_end_frame, text="(在扩展名前插入)", bootstyle="secondary").pack(side=LEFT)
+
+        # 指定位置删除面板
+        self.del_pos_frame = ttkb.Frame(parent)
+        ttkb.Label(self.del_pos_frame, text="起始位置:").pack(side=LEFT, padx=(0, 2))
+        ttkb.Entry(self.del_pos_frame, textvariable=self.rename_delete_start_var, width=4).pack(side=LEFT, padx=(0, 6))
+        ttkb.Label(self.del_pos_frame, text="(从0开始)").pack(side=LEFT, padx=(0, 10))
+        ttkb.Label(self.del_pos_frame, text="删除数量:").pack(side=LEFT, padx=(0, 2))
+        ttkb.Entry(self.del_pos_frame, textvariable=self.rename_delete_count_var, width=4).pack(side=LEFT)
+
+        # 删除指定文本面板
+        self.del_text_frame = ttkb.Frame(parent)
+        ttkb.Label(self.del_text_frame, text="删除文本:").pack(side=LEFT, padx=(0, 2))
+        ttkb.Entry(self.del_text_frame, textvariable=self.rename_delete_text_var, width=20).pack(side=LEFT, padx=(0, 10))
+        ttkb.Label(self.del_text_frame, text="(删除文件名中所有匹配文本)", bootstyle="secondary").pack(side=LEFT)
+
+        self._on_insert_submode_change()
+
+    def _on_insert_submode_change(self):
+        """切换插入/删除子模式时显示对应参数面板"""
+        for f in (self.ins_pos_frame, self.ins_end_frame, self.del_pos_frame, self.del_text_frame):
+            f.pack_forget()
+        submode = self.rename_submode_var.get()
+        mapping = {"insert_pos": self.ins_pos_frame, "insert_end": self.ins_end_frame,
+                   "delete_pos": self.del_pos_frame, "delete_text": self.del_text_frame}
+        target = mapping.get(submode)
+        if target:
+            target.pack(fill=X, pady=2)
+        self._rename_preview_refresh()
 
     def _build_case_params(self, parent):
         modes = [("全小写", "lower"), ("全大写", "upper"), ("首字母大写", "title"),
@@ -694,7 +746,7 @@ class BatchImageCrop:
                 _, ext = os.path.splitext(p)
                 num_str = f"{start + i:0{digits}d}"
                 new_name = f"{prefix}{num_str}{ext}"
-                results.append((p, new_name, False))
+                results.append((p, new_name, False, False))
 
         elif mode == "replace":
             find = self.rename_find_var.get()
@@ -709,7 +761,8 @@ class BatchImageCrop:
                         new_base = base
                 else:
                     new_base = base.replace(find, repl)
-                results.append((p, new_base + ext, False))
+                no_match = (find != "" and new_base == base)
+                results.append((p, new_base + ext, False, no_match))
 
         elif mode == "template":
             tmpl = self.rename_template_var.get()
@@ -720,21 +773,41 @@ class BatchImageCrop:
                 name = name.replace("{ext}", ext[1:]).replace("{date}", datetime.now().strftime("%Y%m%d"))
                 if not name.endswith(ext) and "." not in name.split("/")[-1].split("\\")[-1]:
                     name += ext
-                results.append((p, name, False))
+                results.append((p, name, False, False))
 
         elif mode == "insert":
-            try:
-                pos = int(self.rename_insert_pos_var.get())
-            except ValueError:
-                pos = 0
-            text = self.rename_insert_text_var.get()
+            submode = self.rename_submode_var.get()
             for p in self.image_files:
                 base, ext = os.path.splitext(os.path.basename(p))
-                if pos == -1:
+                if submode == "insert_pos":
+                    try:
+                        pos = int(self.rename_insert_pos_var.get())
+                    except ValueError:
+                        pos = 0
+                    text = self.rename_insert_text_var.get()
+                    if pos == -1:
+                        new_name = base + text + ext
+                    else:
+                        new_name = base[:pos] + text + base[pos:] + ext
+                elif submode == "insert_end":
+                    text = self.rename_insert_text_var.get()
                     new_name = base + text + ext
+                elif submode == "delete_pos":
+                    try:
+                        start = int(self.rename_delete_start_var.get())
+                    except ValueError:
+                        start = 0
+                    try:
+                        count = int(self.rename_delete_count_var.get())
+                    except ValueError:
+                        count = 1
+                    new_name = base[:start] + base[start + count:] + ext
+                elif submode == "delete_text":
+                    text = self.rename_delete_text_var.get()
+                    new_name = base.replace(text, "") + ext
                 else:
-                    new_name = base[:pos] + text + base[pos:] + ext
-                results.append((p, new_name, False))
+                    new_name = base + ext
+                results.append((p, new_name, False, False))
 
         elif mode == "case":
             case = self.rename_case_var.get()
@@ -752,43 +825,76 @@ class BatchImageCrop:
                     new_base, new_ext = base, ext.upper()
                 else:
                     new_base, new_ext = base, ext
-                results.append((p, new_base + new_ext, False))
+                results.append((p, new_base + new_ext, False, False))
 
         # 冲突检测
         new_names_seen = {}
-        for i, (p, name, _) in enumerate(results):
+        for i, (p, name, _, no_match) in enumerate(results):
             old_dir = os.path.dirname(p)
             full_new = os.path.join(old_dir, name)
             conflict = False
             if name in new_names_seen:
                 conflict = True
-            elif os.path.exists(full_new) and old_dir != full_new:
+            elif os.path.exists(full_new) and p != full_new:
                 conflict = True
             new_names_seen[name] = True
-            results[i] = (p, name, conflict)
+            results[i] = (p, name, conflict, no_match)
 
         return results
 
     def _rename_preview_refresh(self):
-        """刷新预览区"""
+        """刷新预览区：双列对齐，旧名 → 新名 单行显示"""
         results = self._rename_get_new_names()
         self.rename_preview.configure(state=tk.NORMAL)
         self.rename_preview.delete("1.0", tk.END)
         self.rename_preview.tag_configure("conflict", foreground="red")
         self.rename_preview.tag_configure("normal", foreground="#333")
+        self.rename_preview.tag_configure("changed", foreground="#006400")
+        self.rename_preview.tag_configure("no_match", foreground="#c8a000")
 
-        for p, name, conflict in results:
+        # 计算旧名列宽度，用于对齐
+        max_old_len = 0
+        for p, name, _ in results:
             old_name = os.path.basename(p)
-            tag = "conflict" if conflict else "normal"
-            self.rename_preview.insert(tk.END, f"{old_name}\n", ("normal",))
-            self.rename_preview.insert(tk.END, f"  → {name}\n", (tag,))
+            if len(old_name) > max_old_len:
+                max_old_len = len(old_name)
+        col_width = max_old_len + 2  # 留2个空格间距
+
+        for p, name, conflict, no_match in results:
+            old_name = os.path.basename(p)
+            is_changed = old_name != name
             if conflict:
-                self.rename_preview.insert(tk.END, f"  ⚠ 冲突！\n", ("conflict",))
+                tag = "conflict"
+                suffix = "  ⚠ 冲突"
+            elif no_match:
+                tag = "no_match"
+                suffix = "  ⚠ 未找到"
+            elif is_changed:
+                tag = "changed"
+                suffix = ""
+            else:
+                tag = "normal"
+                suffix = "  (无变化)"
+            # 等宽对齐：旧名左对齐到 col_width，然后 → 新名
+            self.rename_preview.insert(tk.END, f"{old_name:<{col_width}} → {name}{suffix}\n", (tag,))
 
         self.rename_preview.configure(state=tk.DISABLED)
-        conflict_count = sum(1 for _, _, c in results if c)
-        self.rename_status_label.config(
-            text=f"共 {len(results)} 个文件" + (f"，{conflict_count} 个冲突" if conflict_count else "，无冲突"))
+        conflict_count = sum(1 for _, _, c, _ in results if c)
+        no_match_count = sum(1 for _, _, _, n in results if n)
+        unchanged_count = sum(1 for p, name, _, n in results if os.path.basename(p) == name and not n)
+        changed_count = len(results) - conflict_count - unchanged_count - no_match_count
+        status_parts = [f"共 {len(results)} 个文件"]
+        if changed_count:
+            status_parts.append(f"{changed_count} 个将改名")
+        if unchanged_count:
+            status_parts.append(f"{unchanged_count} 个无变化")
+        if no_match_count:
+            status_parts.append(f"{no_match_count} 个未找到")
+        if conflict_count:
+            status_parts.append(f"{conflict_count} 个冲突")
+        elif not unchanged_count and not no_match_count:
+            status_parts.append("无冲突")
+        self.rename_status_label.config(text="，".join(status_parts))
 
     def _rename_execute(self):
         """执行重命名"""
@@ -800,7 +906,7 @@ class BatchImageCrop:
         if not results:
             return
 
-        conflict_count = sum(1 for _, _, c in results if c)
+        conflict_count = sum(1 for _, _, c, _ in results if c)
         if conflict_count:
             if not messagebox.askyesno("冲突警告", f"有 {conflict_count} 个文件存在冲突，是否跳过冲突文件继续？"):
                 return
@@ -811,7 +917,7 @@ class BatchImageCrop:
         skipped = 0
         errors = []
 
-        for old_path, new_name, conflict in results:
+        for old_path, new_name, conflict, no_match in results:
             if conflict:
                 skipped += 1
                 continue
@@ -826,7 +932,7 @@ class BatchImageCrop:
 
         # 更新 image_files 中的路径
         name_map = {}
-        for old_path, new_name, conflict in results:
+        for old_path, new_name, conflict, _ in results:
             if not conflict:
                 old_dir = os.path.dirname(old_path)
                 name_map[old_path] = os.path.join(old_dir, new_name)
