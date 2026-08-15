@@ -1,5 +1,5 @@
 """
-MBO/PBO批量图片剪裁工具 v2.6
+MBO/PBO批量图片剪裁工具 v2.8
 - 批量加载图片，缩略图预览列表（左右排布节省空间）
 - 裁剪框固定比例、大小可调（拖拽角落缩放）
 - 每张图独立裁剪位置/大小，可选共享
@@ -77,7 +77,7 @@ class PerImageSettings:
 class BatchImageCrop:
     def __init__(self, root):
         self.root = root
-        self.root.title("MBO/PBO批量图片剪裁工具 v2.6")
+        self.root.title("MBO/PBO批量图片剪裁工具 v2.8")
         self.root.geometry("1500x950")
         self.root.minsize(1500, 950)
 
@@ -180,12 +180,8 @@ class BatchImageCrop:
             img = img.transpose(Image.FLIP_LEFT_RIGHT)
         if settings.flip_v:
             img = img.transpose(Image.FLIP_TOP_BOTTOM)
-        if settings.rotate == 90:
-            img = img.transpose(Image.ROTATE_90)
-        elif settings.rotate == 180:
-            img = img.transpose(Image.ROTATE_180)
-        elif settings.rotate == 270:
-            img = img.transpose(Image.ROTATE_270)
+        if settings.rotate != 0:
+            img = img.rotate(settings.rotate, expand=True, resample=Image.BICUBIC)
         return img
 
     def _get_target_crop_pixels(self, src_settings):
@@ -408,8 +404,8 @@ class BatchImageCrop:
         rot_frame = ttkb.Frame(transform_frame)
         rot_frame.pack(fill=X, pady=(4, 0))
         ttkb.Label(rot_frame, text="旋转:").pack(side=LEFT)
-        ttkb.Combobox(rot_frame, textvariable=self.rotate_var, values=["0", "90", "180", "270"],
-                      state="readonly", width=5).pack(side=LEFT, padx=4)
+        ttkb.Combobox(rot_frame, textvariable=self.rotate_var, values=["0", "45", "90", "135", "180", "225", "270", "315"],
+                      width=5).pack(side=LEFT, padx=4)
         ttkb.Label(rot_frame, text="°").pack(side=LEFT)
         self.rotate_var.trace_add("write", lambda *a: self.on_transform_change())
 
@@ -827,16 +823,18 @@ class BatchImageCrop:
                     new_base, new_ext = base, ext
                 results.append((p, new_base + new_ext, False, False))
 
-        # 冲突检测
+        # 冲突检测（no_match 的文件不会改名，自身不参与冲突检测）
         new_names_seen = {}
         for i, (p, name, _, no_match) in enumerate(results):
-            old_dir = os.path.dirname(p)
-            full_new = os.path.join(old_dir, name)
             conflict = False
-            if name in new_names_seen:
-                conflict = True
-            elif os.path.exists(full_new) and p != full_new:
-                conflict = True
+            if not no_match:
+                old_dir = os.path.dirname(p)
+                full_new = os.path.join(old_dir, name)
+                if name in new_names_seen:
+                    conflict = True
+                elif os.path.exists(full_new) and p != full_new:
+                    conflict = True
+            # 无论是否改名，都登记名字，防止后续改名文件与当前文件重名
             new_names_seen[name] = True
             results[i] = (p, name, conflict, no_match)
 
@@ -850,7 +848,7 @@ class BatchImageCrop:
         self.rename_preview.tag_configure("conflict", foreground="red")
         self.rename_preview.tag_configure("normal", foreground="#333")
         self.rename_preview.tag_configure("changed", foreground="#006400")
-        self.rename_preview.tag_configure("no_match", foreground="#c8a000")
+        self.rename_preview.tag_configure("no_match", foreground="#E6A100")
 
         # 计算旧名列宽度，用于对齐
         max_old_len = 0
@@ -1089,7 +1087,9 @@ class BatchImageCrop:
         tags = []
         if s.flip_h: tags.append("H")
         if s.flip_v: tags.append("V")
-        if s.rotate: tags.append(f"{s.rotate}°")
+        if s.rotate:
+            r = s.rotate
+            tags.append(f"{int(r)}°" if r == int(r) else f"{r:.1f}°")
         tag_str = f" [{'+'.join(tags)}]" if tags else ""
         name_lbl = ttkb.Label(info_frame, text=f"{fname}{tag_str}",
                               font=("Microsoft YaHei", 9), cursor="hand2", anchor=W)
@@ -1160,7 +1160,9 @@ class BatchImageCrop:
             tags = []
             if s.flip_h: tags.append("H")
             if s.flip_v: tags.append("V")
-            if s.rotate: tags.append(f"{s.rotate}°")
+            if s.rotate:
+                r = s.rotate
+                tags.append(f"{int(r)}°" if r == int(r) else f"{r:.1f}°")
             tag_str = f" [{'+'.join(tags)}]" if tags else ""
             fname = os.path.basename(self.image_files[idx])
             name_lbl = getattr(widget, '_name_lbl', None)
@@ -1337,7 +1339,7 @@ class BatchImageCrop:
         s.flip_h = self.flip_h_var.get()
         s.flip_v = self.flip_v_var.get()
         try:
-            s.rotate = int(self.rotate_var.get())
+            s.rotate = float(self.rotate_var.get())
         except ValueError:
             s.rotate = 0
         self.image_settings[self.current_index] = s
