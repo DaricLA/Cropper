@@ -854,7 +854,7 @@ class BatchImageCrop:
 
         # 计算旧名列宽度，用于对齐
         max_old_len = 0
-        for p, name, _ in results:
+        for p, name, _, _ in results:
             old_name = os.path.basename(p)
             if len(old_name) > max_old_len:
                 max_old_len = len(old_name)
