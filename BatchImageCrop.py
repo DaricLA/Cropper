@@ -578,8 +578,6 @@ class BatchImageCrop:
         ttkb.Entry(self.del_text_frame, textvariable=self.rename_delete_text_var, width=20).pack(side=LEFT, padx=(0, 10))
         ttkb.Label(self.del_text_frame, text="(删除文件名中所有匹配文本)", bootstyle="secondary").pack(side=LEFT)
 
-        self._on_insert_submode_change()
-
     def _on_insert_submode_change(self):
         """切换插入/删除子模式时显示对应参数面板"""
         for f in (self.ins_pos_frame, self.ins_end_frame, self.del_pos_frame, self.del_text_frame):
@@ -608,6 +606,8 @@ class BatchImageCrop:
         target = mapping.get(mode)
         if target:
             target.pack(fill=X, pady=2)
+        if mode == "insert":
+            self._on_insert_submode_change()
         self._rename_preview_refresh()
 
     def _on_tab_changed(self, event):
