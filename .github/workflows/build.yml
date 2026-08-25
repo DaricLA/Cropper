@@ -15,9 +15,9 @@ jobs:
 
     - run: |
         pip install -r requirements.txt
-        pyinstaller --onefile --windowed --name BatchImageCrop --collect-all ttkbootstrap --collect-all tkinterdnd2 --hidden-import PIL._tkinter_finder --hidden-import tkinterdnd2 BatchImageCrop.py
+        pyinstaller --onedir --windowed --name BatchImageCrop --collect-all ttkbootstrap --collect-all tkinterdnd2 --hidden-import PIL._tkinter_finder --hidden-import tkinterdnd2 BatchImageCrop.py
 
     - uses: actions/upload-artifact@v4
       with:
         name: BatchImageCrop
-        path: dist/BatchImageCrop.exe
+        path: dist/BatchImageCrop/
