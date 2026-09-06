@@ -1,5 +1,5 @@
 """
-MBO/PBO批量图片剪裁工具 v3.0
+MBO/PBO批量图片剪裁工具 v3.1
 - 批量加载图片，缩略图预览列表（左右排布节省空间）
 - 裁剪框固定比例、大小可调（拖拽角落缩放）
 - 每张图独立裁剪位置/大小，可选共享
@@ -78,7 +78,7 @@ class PerImageSettings:
 class BatchImageCrop:
     def __init__(self, root):
         self.root = root
-        self.root.title("MBO/PBO批量图片剪裁工具 v3.0")
+        self.root.title("MBO/PBO批量图片剪裁工具 v3.1")
         self.root.geometry("1500x950")
         self.root.minsize(1500, 950)
 
@@ -150,6 +150,7 @@ class BatchImageCrop:
         self.wm_y_var = tk.StringVar(value="90")
         self.wm_margin_var = tk.StringVar(value="20")
         self.wm_full_image_var = tk.BooleanVar(value=False)
+        self.wm_crop_preview_var = tk.BooleanVar(value=False)
         self.wm_preset_buttons = {}
         self._wm_preview_after = None
         self._wm_dragging = False
@@ -160,6 +161,7 @@ class BatchImageCrop:
         self.wm_out_size = (1, 1)
         self.wm_out_scale = 1.0
         self.wm_out_pos = (0, 0)
+        self._wm_crop_preview_photo = None
 
         self.build_ui()
 
@@ -471,7 +473,7 @@ class BatchImageCrop:
         self.wm_canvas.bind("<Motion>", self._wm_on_hover)
 
         # 右侧控制面板
-        right = ttkb.Frame(main, width=320)
+        right = ttkb.Frame(main, width=360)
         right.pack(side=LEFT, fill=Y, padx=(6, 0))
         right.pack_propagate(False)
 
@@ -485,9 +487,12 @@ class BatchImageCrop:
         row.pack(fill=X)
         ttkb.Label(row, text="字体:").pack(side=LEFT)
         fonts = ["微软雅黑", "宋体", "黑体", "楷体", "仿宋", "等线", "Arial", "Times New Roman", "Courier New"]
-        ttkb.Combobox(row, textvariable=self.wm_font_var, values=fonts, width=17).pack(side=LEFT, padx=(2, 8))
+        ttkb.Combobox(row, textvariable=self.wm_font_var, values=fonts, width=12).pack(side=LEFT,
+                                                                                       padx=(2, 8), fill=X, expand=True)
+        row = ttkb.Frame(lf)
+        row.pack(fill=X, pady=(4, 0))
         ttkb.Label(row, text="字号:").pack(side=LEFT)
-        ttkb.Entry(row, textvariable=self.wm_size_var, width=5).pack(side=LEFT)
+        ttkb.Entry(row, textvariable=self.wm_size_var, width=6).pack(side=LEFT, padx=(2, 8))
         ttkb.Label(row, text="px").pack(side=LEFT)
 
         lf = ttkb.LabelFrame(right, text="颜色与不透明度", padding=6)
@@ -498,8 +503,7 @@ class BatchImageCrop:
         self.wm_color_btn = tk.Button(row, bg=self.wm_color_var.get(), width=3, relief="solid",
                                       command=self._pick_wm_color)
         self.wm_color_btn.pack(side=LEFT, padx=2)
-        ttkb.Entry(row, textvariable=self.wm_color_var, width=9).pack(side=LEFT, padx=(2, 8))
-        ttkb.Label(row, text="透明度:").pack(side=LEFT)
+        ttkb.Label(row, text="透明度:").pack(side=LEFT, padx=(8, 0))
         self.wm_opacity_label = ttkb.Label(row, text=f"{int(self.wm_opacity_var.get())}%", width=4)
         self.wm_opacity_label.pack(side=LEFT)
         ttkb.Scale(lf, from_=0, to=100, variable=self.wm_opacity_var, orient="horizontal",
@@ -515,13 +519,20 @@ class BatchImageCrop:
                          command=self._on_wm_pos_mode).pack(side=LEFT, padx=2)
 
         self.wm_preset_grid = ttkb.Frame(lf)
-        grid_spec = [("tl", "左上"), ("tc", "上中"), ("tr", "右上"),
-                     ("cl", "左中"), ("cc", "居中"), ("cr", "右中"),
-                     ("bl", "左下"), ("bc", "下中"), ("br", "右下")]
-        for i, (code, label) in enumerate(grid_spec):
-            b = ttkb.Button(self.wm_preset_grid, text=label, width=7,
+        for c in range(3):
+            self.wm_preset_grid.columnconfigure(c, weight=1)  # 三列均匀拉宽到面板宽度
+        grid_spec = [("tl", "↖", "左上"), ("tc", "↑", "上中"), ("tr", "↗", "右上"),
+                     ("cl", "←", "左中"), ("cc", "●", "居中"), ("cr", "→", "右中"),
+                     ("bl", "↙", "左下"), ("bc", "↓", "下中"), ("br", "↘", "右下")]
+        for i, (code, arrow, zh) in enumerate(grid_spec):
+            b = ttkb.Button(self.wm_preset_grid, text=arrow, width=3,
                             bootstyle="secondary-outline", command=lambda c=code: self._on_wm_preset_click(c))
+            try:
+                b.configure(padding=(2, 0))  # 紧凑按钮：减小内边距节省高度
+            except Exception:
+                pass
             b.grid(row=i // 3, column=i % 3, padx=2, pady=2, sticky="nsew")
+            ToolTip(b, static_text=zh)
             self.wm_preset_buttons[code] = b
 
         self.wm_custom_frame = ttkb.Frame(lf)
@@ -543,6 +554,8 @@ class BatchImageCrop:
 
         ttkb.Checkbutton(right, text="使用完整原图（跳过裁剪）", variable=self.wm_full_image_var,
                          command=self._render_wm_preview).pack(fill=X, padx=6, pady=(4, 2))
+        ttkb.Checkbutton(right, text="剪裁界面预览（只读）", variable=self.wm_crop_preview_var,
+                         command=self._on_crop_preview_toggle).pack(fill=X, padx=6, pady=(2, 2))
 
         ttkb.Separator(right).pack(fill=X, padx=6, pady=4)
         ttkb.Button(right, text="刷新预览", bootstyle="info-outline",
@@ -1565,19 +1578,19 @@ class BatchImageCrop:
         margin = 20
         avail_w = cw - margin * 2
         avail_h = ch - margin * 2
+        # 框内效果放大显示：大图缩小适配、小图放大显示，裁剪框尽量占满画布主体，
+        # 水印先按输出分辨率渲染再按显示比缩放，相对框比例始终与导出一致
         base_scale = min(avail_w / iw, avail_h / ih)
         self.scale = base_scale * self.zoom
         dw = max(1, int(iw * self.scale))
         dh = max(1, int(ih * self.scale))
-        if self._crop_centered:
-            left_rel, top_rel, w_rel, h_rel = self._get_crop_rect_rel(s, iw, ih)
-            cx = left_rel + w_rel / 2
-            cy = top_rel + h_rel / 2
-            self.pad_x = int(cw / 2 - cx * dw)
-            self.pad_y = int(ch / 2 - cy * dh)
-        else:
-            self.pad_x = (cw - dw) // 2
-            self.pad_y = (ch - dh) // 2
+        # 以裁剪框中心对齐画布中心（放大显示时框始终居中，拖动跟手）
+        left_rel, top_rel, w_rel, h_rel = self._get_crop_rect_rel(s, iw, ih)
+        cx = left_rel + w_rel / 2
+        cy = top_rel + h_rel / 2
+        self.pad_x = int(cw / 2 - cx * dw)
+        self.pad_y = int(ch / 2 - cy * dh)
+        self._crop_centered = True
         disp = img.resize((dw, dh), Image.LANCZOS)
         self.display_photo = ImageTk.PhotoImage(disp)
         self.canvas.create_image(self.pad_x, self.pad_y, anchor=tk.NW, image=self.display_photo, tags="img")
@@ -1600,6 +1613,22 @@ class BatchImageCrop:
         if box_right < self.pad_x + dw:
             self.canvas.create_rectangle(box_right, box_y, self.pad_x + dw, box_bottom,
                                           fill="black", stipple="gray50", outline="")
+        # 水印剪裁界面预览（只读，不参与编辑；仅在勾选后绘制）
+        self.canvas.delete("wm_preview")
+        if self.wm_crop_preview_var.get():
+            if self.wm_full_image_var.get():
+                wm_x, wm_y, wm_w, wm_h = self.pad_x, self.pad_y, dw, dh
+                wm_out_w, wm_out_h = iw, ih
+            else:
+                wm_x, wm_y, wm_w, wm_h = box_x, box_y, box_w, box_h
+                wm_out_w = int(w_rel * iw)
+                wm_out_h = int(h_rel * ih)
+            wm_r = self._make_wm_preview_photo(wm_w, wm_h, wm_out_w, wm_out_h)
+            if wm_r is not None:
+                wm_photo, wm_px, wm_py = wm_r
+                self._wm_crop_preview_photo = wm_photo
+                self.canvas.create_image(wm_x + wm_px, wm_y + wm_py, anchor=tk.NW,
+                                         image=wm_photo, tags="wm_preview")
         self.canvas.create_rectangle(box_x, box_y, box_right, box_bottom,
                                       outline="#00ff88", width=2)
         hs = HANDLE_SIZE
@@ -1863,6 +1892,10 @@ class BatchImageCrop:
                 btn.configure(bootstyle="primary")
             else:
                 btn.configure(bootstyle="secondary-outline")
+            try:
+                btn.configure(padding=(2, 0))  # 保持紧凑按钮尺寸
+            except Exception:
+                pass
 
     def _on_wm_scale(self, val):
         if hasattr(self, 'wm_opacity_label'):
@@ -1870,6 +1903,11 @@ class BatchImageCrop:
                 self.wm_opacity_label.config(text=f"{int(float(val))}%")
             except Exception:
                 pass
+
+    def _on_crop_preview_toggle(self):
+        """「剪裁界面预览」开关：默认关闭；打开后在裁剪页同步显示水印预览（只读）"""
+        self._render_canvas()
+        self._render_wm_preview()
 
     def _compute_wm_layout(self, w, h):
         """计算水印在原图上的布局，返回 (tx, ty, tw, th, font, fill_rgba, bbox) 或 None"""
@@ -1937,6 +1975,36 @@ class BatchImageCrop:
         out = Image.alpha_composite(base, layer)
         return out.convert("RGB")
 
+    def _make_wm_preview_photo(self, wm_w, wm_h, out_w, out_h):
+        """裁剪页水印预览：与导出完全同一渲染路径。
+
+        先用输出分辨率（out_w×out_h）按导出字号绘制文字（复用 _compute_wm_layout，
+        与 _apply_watermark_to_image 同源），再把文字图层等比缩放到显示尺寸，
+        保证预览=导出的等比缩略，避免小字号直接渲染的失真。
+        返回 (photo, x, y) 或 None；x/y 为图层左上角在显示区域内的坐标。
+        """
+        text = self.wm_text_var.get()
+        if not text or wm_w <= 0 or wm_h <= 0 or out_w <= 0 or out_h <= 0:
+            return None
+        layout = self._compute_wm_layout(out_w, out_h)
+        if not layout:
+            return None
+        tx, ty, tw, th, font, color, bbox = layout
+        pad = 4
+        lw = max(2, tw + pad * 2)
+        lh = max(2, th + pad * 2)
+        layer = Image.new("RGBA", (lw, lh), (0, 0, 0, 0))
+        d = ImageDraw.Draw(layer)
+        d.text((pad - bbox[0], pad - bbox[1]), text, font=font, fill=color, anchor="la")
+        ratio = wm_w / out_w  # 统一比例尺下的显示比：所有图片一致，水印相对裁剪框比例固定
+        dw = max(1, int(round(lw * ratio)))
+        dh = max(1, int(round(lh * ratio)))
+        disp = layer.resize((dw, dh), Image.LANCZOS)
+        photo = ImageTk.PhotoImage(disp)
+        x = (tx - pad) * ratio
+        y = (ty - pad) * ratio
+        return photo, x, y
+
     def _render_wm_preview(self):
         if not hasattr(self, 'wm_canvas') or self.wm_canvas is None:
             return
@@ -1995,6 +2063,9 @@ class BatchImageCrop:
                                             outline="#ffd400", dash=(5, 3), width=1)
         self.wm_canvas.create_text(cw // 2, ch - 8, text=f"预览: 裁剪结果 + 水印  ({dw}×{dh})  |  按住水印拖动定位",
                                    fill="#00ff88", font=("Consolas", 10))
+        # 开启了「剪裁界面预览」时，同步把水印画到裁剪页（只读）
+        if getattr(self, 'wm_crop_preview_var', None) is not None and self.wm_crop_preview_var.get():
+            self._render_canvas()
 
     def _wm_current_center_pct(self):
         """返回当前水印在输出图上的中心百分比 (xp, yp)，兼容预设/自定义"""
