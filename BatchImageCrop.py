@@ -1,5 +1,5 @@
 """
-MBO/PBO批量图片剪裁工具 v2.8
+MBO/PBO批量图片剪裁工具 v3.0
 - 批量加载图片，缩略图预览列表（左右排布节省空间）
 - 裁剪框固定比例、大小可调（拖拽角落缩放）
 - 每张图独立裁剪位置/大小，可选共享
@@ -8,6 +8,7 @@ MBO/PBO批量图片剪裁工具 v2.8
 - 批量重命名（序号/替换/模板/插入删除/大小写），实时预览+冲突检测+撤销
 - 插入/删除支持4种子模式：指定位置插入、末尾插入、指定位置删除、删除指定文本
 - 预览区双列对齐，旧名→新名单行显示，颜色区分（绿色=将改名/红色=冲突/灰色=无变化）
+- 文字水印：批量在裁剪输出图片的自定义位置添加文字（内容/字号/颜色/透明度/位置可调）
 - 绿色免安装，ttkbootstrap flatly 主题
 - 键盘上下键切换图片，滚轮独立控制列表/预览
 - 支持拖拽图片文件到裁剪区或列表区直接导入
@@ -15,10 +16,10 @@ MBO/PBO批量图片剪裁工具 v2.8
 
 import tkinter as tk
 from tkinter import ttk
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, messagebox, colorchooser
 import ttkbootstrap as ttkb
 from ttkbootstrap.constants import *
-from PIL import Image, ImageTk
+from PIL import Image, ImageTk, ImageDraw, ImageFont
 import os
 import re
 from datetime import datetime
@@ -77,7 +78,7 @@ class PerImageSettings:
 class BatchImageCrop:
     def __init__(self, root):
         self.root = root
-        self.root.title("MBO/PBO批量图片剪裁工具 v2.8")
+        self.root.title("MBO/PBO批量图片剪裁工具 v3.0")
         self.root.geometry("1500x950")
         self.root.minsize(1500, 950)
 
@@ -137,7 +138,37 @@ class BatchImageCrop:
         self.rename_case_var = tk.StringVar(value="lower")
         self.rename_undo_stack = []
 
+        # --- 文字水印相关 ---
+        self.wm_text_var = tk.StringVar(value="水印")
+        self.wm_font_var = tk.StringVar(value="微软雅黑")
+        self.wm_size_var = tk.StringVar(value="40")
+        self.wm_color_var = tk.StringVar(value="#FFFFFF")
+        self.wm_opacity_var = tk.DoubleVar(value=50.0)
+        self.wm_pos_mode_var = tk.StringVar(value="preset")
+        self.wm_pos_preset_var = tk.StringVar(value="br")
+        self.wm_x_var = tk.StringVar(value="50")
+        self.wm_y_var = tk.StringVar(value="90")
+        self.wm_margin_var = tk.StringVar(value="20")
+        self.wm_full_image_var = tk.BooleanVar(value=False)
+        self.wm_preset_buttons = {}
+        self._wm_preview_after = None
+        self._wm_dragging = False
+        self._wm_drag_start_pct = (50.0, 50.0)
+        self._wm_drag_start_pos = (0, 0)
+        self.wm_box_canvas = None
+        self.wm_out_dsize = (1, 1)
+        self.wm_out_size = (1, 1)
+        self.wm_out_scale = 1.0
+        self.wm_out_pos = (0, 0)
+
         self.build_ui()
+
+        # 水印参数变化时实时刷新预览
+        for var in (self.wm_text_var, self.wm_font_var, self.wm_size_var, self.wm_opacity_var,
+                    self.wm_pos_mode_var, self.wm_pos_preset_var, self.wm_x_var, self.wm_y_var,
+                    self.wm_margin_var):
+            var.trace_add("write", self._on_wm_var_change)
+        self.wm_color_var.trace_add("write", self._on_wm_color_change)
 
         if HAS_DND:
             self._setup_dnd()
@@ -297,6 +328,11 @@ class BatchImageCrop:
         self.notebook.add(rename_tab, text="  重命名  ")
         self._build_rename_tab(rename_tab)
 
+        # --- Tab 3: 文字水印 ---
+        wm_tab = ttkb.Frame(self.notebook)
+        self.notebook.add(wm_tab, text="  文字水印  ")
+        self._build_watermark_tab(wm_tab)
+
         # 切换标签时刷新重命名列表
         self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
@@ -416,6 +452,105 @@ class BatchImageCrop:
         ttkb.Separator(right_panel).pack(fill=X, pady=(2, 0))
         ttkb.Button(right_panel, text="批量裁剪导出",
                     command=self.batch_crop, bootstyle="info").pack(fill=X, padx=4, pady=(2, 4))
+
+    # ===================== 文字水印 Tab =====================
+    def _build_watermark_tab(self, parent):
+        """构建文字水印标签页：左侧预览 + 右侧控件"""
+        main = ttkb.Frame(parent)
+        main.pack(fill=BOTH, expand=True)
+
+        # 左侧预览区
+        preview_frame = ttkb.Frame(main)
+        preview_frame.pack(side=LEFT, fill=BOTH, expand=True, padx=(4, 0))
+        self.wm_canvas = tk.Canvas(preview_frame, bg="#1a1a2e", highlightthickness=0)
+        self.wm_canvas.pack(fill=BOTH, expand=True)
+        self.wm_canvas.bind("<Configure>", lambda e: self._render_wm_preview())
+        self.wm_canvas.bind("<ButtonPress-1>", self._wm_on_press)
+        self.wm_canvas.bind("<B1-Motion>", self._wm_on_motion)
+        self.wm_canvas.bind("<ButtonRelease-1>", self._wm_on_release)
+        self.wm_canvas.bind("<Motion>", self._wm_on_hover)
+
+        # 右侧控制面板
+        right = ttkb.Frame(main, width=320)
+        right.pack(side=LEFT, fill=Y, padx=(6, 0))
+        right.pack_propagate(False)
+
+        lf = ttkb.LabelFrame(right, text="水印文字", padding=6)
+        lf.pack(fill=X, padx=6, pady=(6, 2))
+        ttkb.Entry(lf, textvariable=self.wm_text_var).pack(fill=X)
+
+        lf = ttkb.LabelFrame(right, text="字体与字号", padding=6)
+        lf.pack(fill=X, padx=6, pady=2)
+        row = ttkb.Frame(lf)
+        row.pack(fill=X)
+        ttkb.Label(row, text="字体:").pack(side=LEFT)
+        fonts = ["微软雅黑", "宋体", "黑体", "楷体", "仿宋", "等线", "Arial", "Times New Roman", "Courier New"]
+        ttkb.Combobox(row, textvariable=self.wm_font_var, values=fonts, width=17).pack(side=LEFT, padx=(2, 8))
+        ttkb.Label(row, text="字号:").pack(side=LEFT)
+        ttkb.Entry(row, textvariable=self.wm_size_var, width=5).pack(side=LEFT)
+        ttkb.Label(row, text="px").pack(side=LEFT)
+
+        lf = ttkb.LabelFrame(right, text="颜色与不透明度", padding=6)
+        lf.pack(fill=X, padx=6, pady=2)
+        row = ttkb.Frame(lf)
+        row.pack(fill=X)
+        ttkb.Label(row, text="颜色:").pack(side=LEFT)
+        self.wm_color_btn = tk.Button(row, bg=self.wm_color_var.get(), width=3, relief="solid",
+                                      command=self._pick_wm_color)
+        self.wm_color_btn.pack(side=LEFT, padx=2)
+        ttkb.Entry(row, textvariable=self.wm_color_var, width=9).pack(side=LEFT, padx=(2, 8))
+        ttkb.Label(row, text="透明度:").pack(side=LEFT)
+        self.wm_opacity_label = ttkb.Label(row, text=f"{int(self.wm_opacity_var.get())}%", width=4)
+        self.wm_opacity_label.pack(side=LEFT)
+        ttkb.Scale(lf, from_=0, to=100, variable=self.wm_opacity_var, orient="horizontal",
+                   command=self._on_wm_scale).pack(fill=X, pady=(4, 0))
+
+        lf = ttkb.LabelFrame(right, text="位置", padding=6)
+        lf.pack(fill=X, padx=6, pady=2)
+        pos_row = ttkb.Frame(lf)
+        pos_row.pack(fill=X)
+        ttkb.Radiobutton(pos_row, text="预设位置", variable=self.wm_pos_mode_var, value="preset",
+                         command=self._on_wm_pos_mode).pack(side=LEFT, padx=2)
+        ttkb.Radiobutton(pos_row, text="自定义坐标", variable=self.wm_pos_mode_var, value="custom",
+                         command=self._on_wm_pos_mode).pack(side=LEFT, padx=2)
+
+        self.wm_preset_grid = ttkb.Frame(lf)
+        grid_spec = [("tl", "左上"), ("tc", "上中"), ("tr", "右上"),
+                     ("cl", "左中"), ("cc", "居中"), ("cr", "右中"),
+                     ("bl", "左下"), ("bc", "下中"), ("br", "右下")]
+        for i, (code, label) in enumerate(grid_spec):
+            b = ttkb.Button(self.wm_preset_grid, text=label, width=7,
+                            bootstyle="secondary-outline", command=lambda c=code: self._on_wm_preset_click(c))
+            b.grid(row=i // 3, column=i % 3, padx=2, pady=2, sticky="nsew")
+            self.wm_preset_buttons[code] = b
+
+        self.wm_custom_frame = ttkb.Frame(lf)
+        row = ttkb.Frame(self.wm_custom_frame)
+        row.pack(fill=X, pady=(6, 0))
+        ttkb.Label(row, text="中心点 X:").pack(side=LEFT)
+        ttkb.Entry(row, textvariable=self.wm_x_var, width=5).pack(side=LEFT, padx=(2, 8))
+        ttkb.Label(row, text="%").pack(side=LEFT)
+        ttkb.Label(row, text="Y:").pack(side=LEFT, padx=(8, 0))
+        ttkb.Entry(row, textvariable=self.wm_y_var, width=5).pack(side=LEFT, padx=(2, 8))
+        ttkb.Label(row, text="%").pack(side=LEFT)
+        row = ttkb.Frame(self.wm_custom_frame)
+        row.pack(fill=X, pady=(4, 0))
+        ttkb.Label(row, text="边距:").pack(side=LEFT)
+        ttkb.Entry(row, textvariable=self.wm_margin_var, width=5).pack(side=LEFT, padx=(2, 8))
+        ttkb.Label(row, text="px（预设位置生效）").pack(side=LEFT)
+
+        self._on_wm_pos_mode()
+
+        ttkb.Checkbutton(right, text="使用完整原图（跳过裁剪）", variable=self.wm_full_image_var,
+                         command=self._render_wm_preview).pack(fill=X, padx=6, pady=(4, 2))
+
+        ttkb.Separator(right).pack(fill=X, padx=6, pady=4)
+        ttkb.Button(right, text="刷新预览", bootstyle="info-outline",
+                    command=self._render_wm_preview).pack(fill=X, padx=6, pady=(0, 2))
+        ttkb.Button(right, text="批量裁剪并添加水印导出", bootstyle="info",
+                    command=self.batch_watermark_export).pack(fill=X, padx=6, pady=2)
+        ttkb.Label(right, text="水印默认叠加在裁剪后的输出图片上；勾选“使用完整原图”则不裁剪直接加水印",
+                   bootstyle="secondary", wraplength=290, justify="left").pack(padx=6, pady=(0, 4))
 
     # ===================== 重命名 Tab =====================
     def _build_rename_tab(self, parent):
@@ -610,6 +745,7 @@ class BatchImageCrop:
         """切换标签时刷新"""
         self._rename_refresh_list()
         self._rename_preview_refresh()
+        self._render_wm_preview()
 
     # ===================== 重命名列表操作 =====================
     def _rename_refresh_list(self):
@@ -1110,6 +1246,7 @@ class BatchImageCrop:
         self._sync_transform_vars()
         self._render_canvas()
         self._update_info_bar()
+        self._render_wm_preview()
 
     def select_prev_image(self):
         if not self.image_files or self.current_index <= 0:
@@ -1296,6 +1433,7 @@ class BatchImageCrop:
         if not self.image_files or self.current_index < 0:
             self.original_image = None
             self._render_canvas()
+            self._render_wm_preview()
             return
         idx = self.current_index
         if idx >= len(self.image_files):
@@ -1311,6 +1449,7 @@ class BatchImageCrop:
             self.original_image = None
             self.info_label.config(text=f"加载失败: {e}")
         self._render_canvas()
+        self._render_wm_preview()
 
     def _update_info_bar(self):
         if self.original_image is None or self.current_index < 0:
@@ -1346,6 +1485,7 @@ class BatchImageCrop:
         self._reload_current_image()
         self._update_all_thumbs()
         self._render_canvas()
+        self._render_wm_preview()
 
     def _reload_current_image(self):
         if self.current_index < 0:
@@ -1384,6 +1524,7 @@ class BatchImageCrop:
             self._crop_centered = False
             self._render_canvas()
             self._update_info_bar()
+            self._render_wm_preview()
         except (ValueError, ZeroDivisionError):
             messagebox.showerror("错误", "请输入有效的正数")
 
@@ -1614,7 +1755,317 @@ class BatchImageCrop:
         if d:
             self.output_dir_var.set(d)
 
+    # ===================== 文字水印辅助 =====================
+    def _hex_to_rgb(self, hex_str):
+        h = (hex_str or "#FFFFFF").strip().lstrip('#')
+        if len(h) == 3:
+            h = ''.join(c * 2 for c in h)
+        if len(h) != 6:
+            return 255, 255, 255
+        try:
+            return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+        except ValueError:
+            return 255, 255, 255
+
+    def _resolve_font(self, family, size):
+        font_map = {
+            "微软雅黑": "msyh.ttc",
+            "Microsoft YaHei": "msyh.ttc",
+            "宋体": "simsun.ttc",
+            "SimSun": "simsun.ttc",
+            "黑体": "simhei.ttf",
+            "SimHei": "simhei.ttf",
+            "楷体": "simkai.ttf",
+            "KaiTi": "simkai.ttf",
+            "仿宋": "simfang.ttf",
+            "FangSong": "simfang.ttf",
+            "等线": "Deng.ttf",
+            "DengXian": "Deng.ttf",
+            "Arial": "arial.ttf",
+            "Times New Roman": "times.ttf",
+            "Courier New": "cour.ttf",
+        }
+        fonts_dir = os.path.join(os.environ.get('WINDIR', r'C:\Windows'), 'Fonts')
+        candidates = []
+        fname = font_map.get(family)
+        if fname:
+            candidates.append(os.path.join(fonts_dir, fname))
+        candidates.append(os.path.join(fonts_dir, 'msyh.ttc'))
+        candidates.append(os.path.join(fonts_dir, 'simsun.ttc'))
+        candidates.append(os.path.join(fonts_dir, 'arial.ttf'))
+        for c in candidates:
+            if os.path.exists(c):
+                try:
+                    return ImageFont.truetype(c, size)
+                except Exception:
+                    continue
+        try:
+            return ImageFont.truetype("arial.ttf", size)
+        except Exception:
+            return ImageFont.load_default()
+
+    def _pick_wm_color(self):
+        current = self.wm_color_var.get() or "#FFFFFF"
+        try:
+            rgb = colorchooser.askcolor(color=current, title="选择水印颜色")
+        except Exception:
+            rgb = (None, None)
+        if rgb and rgb[0]:
+            self.wm_color_var.set(rgb[1])
+
+    def _on_wm_color_change(self, *a):
+        self._update_wm_color_swatch()
+        self._on_wm_var_change()
+
+    def _update_wm_color_swatch(self):
+        if hasattr(self, 'wm_color_btn') and self.wm_color_btn.winfo_exists():
+            try:
+                self.wm_color_btn.config(bg=self.wm_color_var.get() or "#FFFFFF")
+            except Exception:
+                pass
+
+    def _on_wm_var_change(self, *a):
+        if getattr(self, '_wm_dragging', False):
+            # 拖动中：合并同一帧内的多次写入，只重绘一次以保证跟手
+            if getattr(self, '_wm_preview_after', None):
+                try:
+                    self.root.after_cancel(self._wm_preview_after)
+                except Exception:
+                    pass
+            self._wm_preview_after = self.root.after(0, self._render_wm_preview)
+            return
+        if getattr(self, '_wm_preview_after', None):
+            try:
+                self.root.after_cancel(self._wm_preview_after)
+            except Exception:
+                pass
+        self._wm_preview_after = self.root.after(200, self._render_wm_preview)
+
+    def _on_wm_pos_mode(self):
+        if self.wm_pos_mode_var.get() == "preset":
+            self.wm_preset_grid.pack(fill=X, pady=(4, 0))
+            self.wm_custom_frame.pack_forget()
+        else:
+            self.wm_preset_grid.pack_forget()
+            self.wm_custom_frame.pack(fill=X, pady=(4, 0))
+        self._highlight_wm_preset()
+        self._render_wm_preview()
+
+    def _on_wm_preset_click(self, code):
+        self.wm_pos_mode_var.set("preset")
+        self.wm_pos_preset_var.set(code)
+        self._on_wm_pos_mode()
+
+    def _highlight_wm_preset(self):
+        sel = self.wm_pos_preset_var.get()
+        for code, btn in self.wm_preset_buttons.items():
+            if code == sel:
+                btn.configure(bootstyle="primary")
+            else:
+                btn.configure(bootstyle="secondary-outline")
+
+    def _on_wm_scale(self, val):
+        if hasattr(self, 'wm_opacity_label'):
+            try:
+                self.wm_opacity_label.config(text=f"{int(float(val))}%")
+            except Exception:
+                pass
+
+    def _compute_wm_layout(self, w, h):
+        """计算水印在原图上的布局，返回 (tx, ty, tw, th, font, fill_rgba, bbox) 或 None"""
+        text = self.wm_text_var.get()
+        if not text:
+            return None
+        try:
+            font_size = max(6, int(float(self.wm_size_var.get())))
+        except (ValueError, TypeError):
+            font_size = 40
+        font = self._resolve_font(self.wm_font_var.get(), font_size)
+        try:
+            alpha = max(0.0, min(100.0, float(self.wm_opacity_var.get())))
+        except (ValueError, TypeError):
+            alpha = 100.0
+        r, g, b = self._hex_to_rgb(self.wm_color_var.get())
+        a = int(alpha * 255 / 100)
+        dummy = Image.new("RGBA", (1, 1), (0, 0, 0, 0))
+        d = ImageDraw.Draw(dummy)
+        bbox = d.textbbox((0, 0), text, font=font, anchor="la")
+        tw = bbox[2] - bbox[0]
+        th = bbox[3] - bbox[1]
+        try:
+            margin = max(0, int(float(self.wm_margin_var.get())))
+        except (ValueError, TypeError):
+            margin = 20
+        if self.wm_pos_mode_var.get() == "custom":
+            try:
+                xp = max(0.0, min(100.0, float(self.wm_x_var.get())))
+            except ValueError:
+                xp = 50.0
+            try:
+                yp = max(0.0, min(100.0, float(self.wm_y_var.get())))
+            except ValueError:
+                yp = 50.0
+            tx = w * xp / 100 - tw / 2
+            ty = h * yp / 100 - th / 2
+        else:
+            preset = self.wm_pos_preset_var.get()
+            ax = {"l": margin, "c": (w - tw) / 2, "r": w - margin - tw}
+            ay = {"t": margin, "m": (h - th) / 2, "b": h - margin - th}
+            mapping = {"tl": ("l", "t"), "tc": ("c", "t"), "tr": ("r", "t"),
+                       "cl": ("l", "m"), "cc": ("c", "m"), "cr": ("r", "m"),
+                       "bl": ("l", "b"), "bc": ("c", "b"), "br": ("r", "b")}
+            hx, hy = mapping.get(preset, ("c", "m"))
+            tx = ax[hx]
+            ty = ay[hy]
+        tx = max(0, min(tx, w - tw))
+        ty = max(0, min(ty, h - th))
+        return tx, ty, tw, th, font, (r, g, b, a), bbox
+
+    def _apply_watermark_to_image(self, img):
+        text = self.wm_text_var.get()
+        if not text:
+            return img
+        base = img.convert("RGBA")
+        w, h = base.size
+        layout = self._compute_wm_layout(w, h)
+        if not layout:
+            return img
+        tx, ty, tw, th, font, color, bbox = layout
+        layer = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(layer)
+        draw.text((tx - bbox[0], ty - bbox[1]), text, font=font, fill=color, anchor="la")
+        out = Image.alpha_composite(base, layer)
+        return out.convert("RGB")
+
+    def _render_wm_preview(self):
+        if not hasattr(self, 'wm_canvas') or self.wm_canvas is None:
+            return
+        cw = self.wm_canvas.winfo_width()
+        ch = self.wm_canvas.winfo_height()
+        if cw < 10 or ch < 10:
+            return
+        self.wm_canvas.delete("all")
+        if self.original_image is None or self.current_index < 0:
+            self.wm_canvas.create_text(cw // 2, ch // 2, text="请先在「裁剪」页添加图片",
+                                       fill="#888", font=("Microsoft YaHei", 14))
+            return
+        s = self._get_current_settings()
+        img = self._apply_transform(self.original_image, s)
+        if self.wm_full_image_var.get():
+            cropped = img
+        else:
+            iw, ih = img.size
+            left_rel, top_rel, w_rel, h_rel = self._get_crop_rect_rel(s, iw, ih)
+            left = int(left_rel * iw)
+            top = int(top_rel * ih)
+            right = min(int((left_rel + w_rel) * iw), iw)
+            bottom = min(int((top_rel + h_rel) * ih), ih)
+            cropped = img.crop((left, top, right, bottom))
+        out = self._apply_watermark_to_image(cropped).convert("RGB")
+        sw, sh = out.size
+        margin = 10
+        avail_w = cw - margin * 2
+        avail_h = ch - margin * 2
+        if avail_w <= 0 or avail_h <= 0:
+            return
+        d = min(avail_w / sw, avail_h / sh, 1.0)
+        dw = max(1, int(sw * d))
+        dh = max(1, int(sh * d))
+        disp = out.resize((dw, dh), Image.LANCZOS) if d < 1.0 else out
+        self.wm_photo = ImageTk.PhotoImage(disp)
+        px = (cw - dw) // 2
+        py = (ch - dh) // 2
+        self.wm_canvas.create_image(px, py, anchor="nw", image=self.wm_photo)
+        # 记录缩放信息，供拖动换算坐标
+        self.wm_out_dsize = (dw, dh)
+        self.wm_out_size = (sw, sh)
+        self.wm_out_scale = d
+        self.wm_out_pos = (px, py)
+        # 画水印拖拽框（提示可拖动），并用于命中检测
+        layout = self._compute_wm_layout(sw, sh)
+        self.wm_box_canvas = None
+        if layout:
+            tx, ty, tw, th = layout[0], layout[1], layout[2], layout[3]
+            bx = px + tx * d
+            by = py + ty * d
+            bw = tw * d
+            bh = th * d
+            self.wm_box_canvas = (bx, by, bx + bw, by + bh)
+            self.wm_canvas.create_rectangle(bx - 3, by - 3, bx + bw + 3, by + bh + 3,
+                                            outline="#ffd400", dash=(5, 3), width=1)
+        self.wm_canvas.create_text(cw // 2, ch - 8, text=f"预览: 裁剪结果 + 水印  ({dw}×{dh})  |  按住水印拖动定位",
+                                   fill="#00ff88", font=("Consolas", 10))
+
+    def _wm_current_center_pct(self):
+        """返回当前水印在输出图上的中心百分比 (xp, yp)，兼容预设/自定义"""
+        w, h = self.wm_out_size
+        if w <= 0 or h <= 0:
+            return 50.0, 50.0
+        layout = self._compute_wm_layout(w, h)
+        if not layout:
+            return 50.0, 50.0
+        tx, ty, tw, th = layout[0], layout[1], layout[2], layout[3]
+        xp = (tx + tw / 2) / w * 100.0
+        yp = (ty + th / 2) / h * 100.0
+        return max(0.0, min(100.0, xp)), max(0.0, min(100.0, yp))
+
+    def _wm_hit_test(self, mx, my):
+        box = getattr(self, 'wm_box_canvas', None)
+        if not box:
+            return False
+        x0, y0, x1, y1 = box
+        return x0 <= mx <= x1 and y0 <= my <= y1
+
+    def _wm_on_press(self, event):
+        if not self._wm_hit_test(event.x, event.y):
+            return
+        sx, sy = self._wm_current_center_pct()
+        self._wm_drag_start_pct = (sx, sy)
+        self._wm_drag_start_pos = (event.x, event.y)
+        self._wm_dragging = True
+        self.wm_canvas.config(cursor="fleur")
+
+    def _wm_on_motion(self, event):
+        if not self._wm_dragging:
+            return
+        dw, dh = self.wm_out_dsize
+        sx, sy = self._wm_drag_start_pct
+        start_x, start_y = self._wm_drag_start_pos
+        dx = event.x - start_x
+        dy = event.y - start_y
+        if dw > 0:
+            nx = max(0.0, min(100.0, sx + dx / dw * 100.0))
+        else:
+            nx = sx
+        if dh > 0:
+            ny = max(0.0, min(100.0, sy + dy / dh * 100.0))
+        else:
+            ny = sy
+        if self.wm_pos_mode_var.get() != "custom":
+            self.wm_pos_mode_var.set("custom")
+        self.wm_x_var.set(f"{nx:.1f}")
+        self.wm_y_var.set(f"{ny:.1f}")
+
+    def _wm_on_release(self, event):
+        if self._wm_dragging:
+            self._wm_dragging = False
+            self.wm_canvas.config(cursor="")
+
+    def _wm_on_hover(self, event):
+        if self._wm_hit_test(event.x, event.y):
+            self.wm_canvas.config(cursor="fleur")
+        else:
+            self.wm_canvas.config(cursor="")
+
     def batch_crop(self):
+        """批量裁剪导出（不含水印）"""
+        self._batch_export(with_watermark=False)
+
+    def batch_watermark_export(self):
+        """批量裁剪导出并叠加文字水印"""
+        self._batch_export(with_watermark=True)
+
+    def _batch_export(self, with_watermark=False):
         if not self.image_files:
             messagebox.showwarning("提示", "请先添加图片")
             return
@@ -1646,15 +2097,20 @@ class BatchImageCrop:
                     img = img.convert('RGB')
                 s = self.image_settings.get(i, PerImageSettings())
                 img = self._apply_transform(img, s)
-                iw, ih = img.size
-                left_rel, top_rel, w_rel, h_rel = self._get_crop_rect_rel(s, iw, ih)
-                left = int(left_rel * iw)
-                top = int(top_rel * ih)
-                right = int((left_rel + w_rel) * iw)
-                bottom = int((top_rel + h_rel) * ih)
-                right = min(right, iw)
-                bottom = min(bottom, ih)
-                cropped = img.crop((left, top, right, bottom))
+                if with_watermark and self.wm_full_image_var.get():
+                    cropped = img
+                else:
+                    iw, ih = img.size
+                    left_rel, top_rel, w_rel, h_rel = self._get_crop_rect_rel(s, iw, ih)
+                    left = int(left_rel * iw)
+                    top = int(top_rel * ih)
+                    right = int((left_rel + w_rel) * iw)
+                    bottom = int((top_rel + h_rel) * ih)
+                    right = min(right, iw)
+                    bottom = min(bottom, ih)
+                    cropped = img.crop((left, top, right, bottom))
+                if with_watermark:
+                    cropped = self._apply_watermark_to_image(cropped)
                 base, ext = os.path.splitext(os.path.basename(path))
                 out_name = f"{base}{suffix}{ext}"
                 out_path = os.path.join(out_dir, out_name)
@@ -1677,7 +2133,10 @@ class BatchImageCrop:
             self.progress_label.config(text=f"{i+1}/{total}")
             self.root.update_idletasks()
         self.progress['value'] = 100
-        msg = f"完成！成功裁剪 {success}/{total} 张\n输出: {out_dir}\n\n零压缩，直接截取原图像素。"
+        if with_watermark:
+            msg = f"完成！成功处理 {success}/{total} 张（裁剪+文字水印）\n输出: {out_dir}"
+        else:
+            msg = f"完成！成功裁剪 {success}/{total} 张\n输出: {out_dir}\n\n零压缩，直接截取原图像素。"
         if errors:
             msg += f"\n\n失败 {len(errors)} 张:\n" + "\n".join(errors[:10])
         self.info_label.config(text=f"完成: {success}/{total}")
