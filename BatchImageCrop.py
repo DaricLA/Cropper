@@ -138,7 +138,7 @@ class BatchImageCrop:
         self.rename_case_var = tk.StringVar(value="lower")
         self.rename_undo_stack = []
 
-         # --- 文字水印相关 ---
+        # --- 文字水印相关 ---
         self.wm_text_var = tk.StringVar(value="水印")
         self.wm_font_var = tk.StringVar(value="微软雅黑")
         self.wm_size_var = tk.StringVar(value="40")
