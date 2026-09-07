@@ -1,5 +1,5 @@
 """
-MBO/PBO批量图片剪裁工具 v3.1
+MBO/PBO批量图片剪裁工具 v3.2
 - 批量加载图片，缩略图预览列表（左右排布节省空间）
 - 裁剪框固定比例、大小可调（拖拽角落缩放）
 - 每张图独立裁剪位置/大小，可选共享
@@ -78,7 +78,7 @@ class PerImageSettings:
 class BatchImageCrop:
     def __init__(self, root):
         self.root = root
-        self.root.title("MBO/PBO批量图片剪裁工具 v3.1")
+        self.root.title("MBO/PBO批量图片剪裁工具 v3.2")
         self.root.geometry("1500x950")
         self.root.minsize(1500, 950)
 
@@ -139,22 +139,22 @@ class BatchImageCrop:
         self.rename_undo_stack = []
 
         # --- 文字水印相关 ---
-        self.wm_text_var = tk.StringVar(value="水印")
+        self.wm_text_var = tk.StringVar(value="")
         self.wm_font_var = tk.StringVar(value="微软雅黑")
-        self.wm_size_var = tk.StringVar(value="40")
+        self.wm_size_var = tk.StringVar(value="25")
         self.wm_color_var = tk.StringVar(value="#FFFFFF")
         self.wm_opacity_var = tk.DoubleVar(value=50.0)
         # 水印背景底衬：默认启用透明灰色，防止不同底色图片上文字不清晰
         self.wm_bg_enable_var = tk.BooleanVar(value=True)
         self.wm_bg_color_var = tk.StringVar(value="#808080")
-        self.wm_bg_opacity_var = tk.DoubleVar(value=50.0)
+        self.wm_bg_opacity_var = tk.DoubleVar(value=30.0)
         self.wm_pos_mode_var = tk.StringVar(value="preset")
         self.wm_pos_preset_var = tk.StringVar(value="br")
         self.wm_x_var = tk.StringVar(value="50")
         self.wm_y_var = tk.StringVar(value="90")
         self.wm_margin_var = tk.StringVar(value="20")
         self.wm_full_image_var = tk.BooleanVar(value=False)
-        self.wm_crop_preview_var = tk.BooleanVar(value=False)
+        self.wm_crop_preview_var = tk.BooleanVar(value=True)
         self.wm_preset_buttons = {}
         self._wm_preview_after = None
         self._wm_dragging = False
@@ -1964,7 +1964,7 @@ class BatchImageCrop:
         try:
             font_size = max(6, int(float(self.wm_size_var.get())))
         except (ValueError, TypeError):
-            font_size = 40
+            font_size = 25
         font = self._resolve_font(self.wm_font_var.get(), font_size)
         try:
             alpha = max(0.0, min(100.0, float(self.wm_opacity_var.get())))
@@ -1977,7 +1977,7 @@ class BatchImageCrop:
             try:
                 bg_alpha = max(0.0, min(100.0, float(self.wm_bg_opacity_var.get())))
             except (ValueError, TypeError):
-                bg_alpha = 50.0
+                bg_alpha = 30.0
             bgr, bgg, bgb = self._hex_to_rgb(self.wm_bg_color_var.get())
             bg_fill = (bgr, bgg, bgb, int(bg_alpha * 255 / 100))
             bg_pad = max(4, int(font_size * 0.15))  # 背景边距随字号缩放
