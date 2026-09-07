@@ -2031,8 +2031,8 @@ class BatchImageCrop:
         layer = Image.new("RGBA", (w, h), (0, 0, 0, 0))
         draw = ImageDraw.Draw(layer)
         if bg_fill is not None:
-            x0 = tx - bbox[0] - bg_pad
-            y0 = ty - bbox[1] - bg_pad
+            x0 = tx - bg_pad
+            y0 = ty - bg_pad
             draw.rectangle([x0, y0, x0 + tw + bg_pad * 2, y0 + th + bg_pad * 2], fill=bg_fill)
         draw.text((tx - bbox[0], ty - bbox[1]), text, font=font, fill=color, anchor="la")
         out = Image.alpha_composite(base, layer)
