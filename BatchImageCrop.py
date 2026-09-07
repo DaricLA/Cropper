@@ -8,7 +8,7 @@ MBO/PBO批量图片剪裁工具 v3.1
 - 批量重命名（序号/替换/模板/插入删除/大小写），实时预览+冲突检测+撤销
 - 插入/删除支持4种子模式：指定位置插入、末尾插入、指定位置删除、删除指定文本
 - 预览区双列对齐，旧名→新名单行显示，颜色区分（绿色=将改名/红色=冲突/灰色=无变化）
-- 文字水印：批量在裁剪输出图片的自定义位置添加文字（内容/字号/颜色/透明度/位置可调）
+- 文字水印：批量在裁剪输出图片的自定义位置添加文字（内容/字号/颜色/透明度/背景颜色与背景透明度/位置可调）
 - 绿色免安装，ttkbootstrap flatly 主题
 - 键盘上下键切换图片，滚轮独立控制列表/预览
 - 支持拖拽图片文件到裁剪区或列表区直接导入
@@ -138,12 +138,16 @@ class BatchImageCrop:
         self.rename_case_var = tk.StringVar(value="lower")
         self.rename_undo_stack = []
 
-        # --- 文字水印相关 ---
+         # --- 文字水印相关 ---
         self.wm_text_var = tk.StringVar(value="水印")
         self.wm_font_var = tk.StringVar(value="微软雅黑")
         self.wm_size_var = tk.StringVar(value="40")
         self.wm_color_var = tk.StringVar(value="#FFFFFF")
         self.wm_opacity_var = tk.DoubleVar(value=50.0)
+        # 水印背景底衬：默认启用透明灰色，防止不同底色图片上文字不清晰
+        self.wm_bg_enable_var = tk.BooleanVar(value=True)
+        self.wm_bg_color_var = tk.StringVar(value="#808080")
+        self.wm_bg_opacity_var = tk.DoubleVar(value=50.0)
         self.wm_pos_mode_var = tk.StringVar(value="preset")
         self.wm_pos_preset_var = tk.StringVar(value="br")
         self.wm_x_var = tk.StringVar(value="50")
@@ -168,9 +172,10 @@ class BatchImageCrop:
         # 水印参数变化时实时刷新预览
         for var in (self.wm_text_var, self.wm_font_var, self.wm_size_var, self.wm_opacity_var,
                     self.wm_pos_mode_var, self.wm_pos_preset_var, self.wm_x_var, self.wm_y_var,
-                    self.wm_margin_var):
+                    self.wm_margin_var, self.wm_bg_enable_var, self.wm_bg_opacity_var):
             var.trace_add("write", self._on_wm_var_change)
         self.wm_color_var.trace_add("write", self._on_wm_color_change)
+        self.wm_bg_color_var.trace_add("write", self._on_wm_bg_color_change)
 
         if HAS_DND:
             self._setup_dnd()
@@ -495,7 +500,7 @@ class BatchImageCrop:
         ttkb.Entry(row, textvariable=self.wm_size_var, width=6).pack(side=LEFT, padx=(2, 8))
         ttkb.Label(row, text="px").pack(side=LEFT)
 
-        lf = ttkb.LabelFrame(right, text="颜色与不透明度", padding=6)
+        lf = ttkb.LabelFrame(right, text="字体颜色与不透明度", padding=6)
         lf.pack(fill=X, padx=6, pady=2)
         row = ttkb.Frame(lf)
         row.pack(fill=X)
@@ -509,6 +514,21 @@ class BatchImageCrop:
         ttkb.Scale(lf, from_=0, to=100, variable=self.wm_opacity_var, orient="horizontal",
                    command=self._on_wm_scale).pack(fill=X, pady=(4, 0))
 
+        lf = ttkb.LabelFrame(right, text="背景填充（防不清晰）", padding=6)
+        lf.pack(fill=X, padx=6, pady=2)
+        ttkb.Checkbutton(lf, text="启用背景底衬", variable=self.wm_bg_enable_var).pack(anchor="w")
+        bg_row = ttkb.Frame(lf)
+        bg_row.pack(fill=X, pady=(4, 0))
+        ttkb.Label(bg_row, text="颜色:").pack(side=LEFT)
+        self.wm_bg_color_btn = tk.Button(bg_row, bg=self.wm_bg_color_var.get(), width=3, relief="solid",
+                                         command=self._pick_wm_bg_color)
+        self.wm_bg_color_btn.pack(side=LEFT, padx=2)
+        ttkb.Label(bg_row, text="透明度:").pack(side=LEFT, padx=(8, 0))
+        self.wm_bg_opacity_label = ttkb.Label(bg_row, text=f"{int(self.wm_bg_opacity_var.get())}%", width=4)
+        self.wm_bg_opacity_label.pack(side=LEFT)
+        ttkb.Scale(lf, from_=0, to=100, variable=self.wm_bg_opacity_var, orient="horizontal",
+                   command=self._on_wm_bg_scale).pack(fill=X, pady=(4, 0))
+        
         lf = ttkb.LabelFrame(right, text="位置", padding=6)
         lf.pack(fill=X, padx=6, pady=2)
         pos_row = ttkb.Frame(lf)
@@ -1842,14 +1862,34 @@ class BatchImageCrop:
         if rgb and rgb[0]:
             self.wm_color_var.set(rgb[1])
 
+    def _pick_wm_bg_color(self):
+        current = self.wm_bg_color_var.get() or "#808080"
+        try:
+            rgb = colorchooser.askcolor(color=current, title="选择背景颜色")
+        except Exception:
+            rgb = (None, None)
+        if rgb and rgb[0]:
+            self.wm_bg_color_var.set(rgb[1])
+
     def _on_wm_color_change(self, *a):
         self._update_wm_color_swatch()
+        self._on_wm_var_change()
+
+    def _on_wm_bg_color_change(self, *a):
+        self._update_wm_bg_color_swatch()
         self._on_wm_var_change()
 
     def _update_wm_color_swatch(self):
         if hasattr(self, 'wm_color_btn') and self.wm_color_btn.winfo_exists():
             try:
                 self.wm_color_btn.config(bg=self.wm_color_var.get() or "#FFFFFF")
+            except Exception:
+                pass
+
+    def _update_wm_bg_color_swatch(self):
+        if hasattr(self, 'wm_bg_color_btn') and self.wm_bg_color_btn.winfo_exists():
+            try:
+                self.wm_bg_color_btn.config(bg=self.wm_bg_color_var.get() or "#808080")
             except Exception:
                 pass
 
@@ -1904,13 +1944,20 @@ class BatchImageCrop:
             except Exception:
                 pass
 
+    def _on_wm_bg_scale(self, val):
+        if hasattr(self, 'wm_bg_opacity_label'):
+            try:
+                self.wm_bg_opacity_label.config(text=f"{int(float(val))}%")
+            except Exception:
+                pass
+
     def _on_crop_preview_toggle(self):
         """「剪裁界面预览」开关：默认关闭；打开后在裁剪页同步显示水印预览（只读）"""
         self._render_canvas()
         self._render_wm_preview()
 
     def _compute_wm_layout(self, w, h):
-        """计算水印在原图上的布局，返回 (tx, ty, tw, th, font, fill_rgba, bbox) 或 None"""
+        """计算水印在原图上的布局，返回 (tx, ty, tw, th, font, fill_rgba, bbox, bg_fill, bg_pad) 或 None"""
         text = self.wm_text_var.get()
         if not text:
             return None
@@ -1925,6 +1972,18 @@ class BatchImageCrop:
             alpha = 100.0
         r, g, b = self._hex_to_rgb(self.wm_color_var.get())
         a = int(alpha * 255 / 100)
+        # 背景填充：默认启用透明灰色，防止不同底色图片上文字不清晰
+        if self.wm_bg_enable_var.get():
+            try:
+                bg_alpha = max(0.0, min(100.0, float(self.wm_bg_opacity_var.get())))
+            except (ValueError, TypeError):
+                bg_alpha = 50.0
+            bgr, bgg, bgb = self._hex_to_rgb(self.wm_bg_color_var.get())
+            bg_fill = (bgr, bgg, bgb, int(bg_alpha * 255 / 100))
+            bg_pad = max(4, int(font_size * 0.15))  # 背景边距随字号缩放
+        else:
+            bg_fill = None
+            bg_pad = 0
         dummy = Image.new("RGBA", (1, 1), (0, 0, 0, 0))
         d = ImageDraw.Draw(dummy)
         bbox = d.textbbox((0, 0), text, font=font, anchor="la")
@@ -1957,7 +2016,7 @@ class BatchImageCrop:
             ty = ay[hy]
         tx = max(0, min(tx, w - tw))
         ty = max(0, min(ty, h - th))
-        return tx, ty, tw, th, font, (r, g, b, a), bbox
+        return tx, ty, tw, th, font, (r, g, b, a), bbox, bg_fill, bg_pad
 
     def _apply_watermark_to_image(self, img):
         text = self.wm_text_var.get()
@@ -1968,9 +2027,13 @@ class BatchImageCrop:
         layout = self._compute_wm_layout(w, h)
         if not layout:
             return img
-        tx, ty, tw, th, font, color, bbox = layout
+        tx, ty, tw, th, font, color, bbox, bg_fill, bg_pad = layout
         layer = Image.new("RGBA", (w, h), (0, 0, 0, 0))
         draw = ImageDraw.Draw(layer)
+        if bg_fill is not None:
+            x0 = tx - bbox[0] - bg_pad
+            y0 = ty - bbox[1] - bg_pad
+            draw.rectangle([x0, y0, x0 + tw + bg_pad * 2, y0 + th + bg_pad * 2], fill=bg_fill)
         draw.text((tx - bbox[0], ty - bbox[1]), text, font=font, fill=color, anchor="la")
         out = Image.alpha_composite(base, layer)
         return out.convert("RGB")
@@ -1989,12 +2052,14 @@ class BatchImageCrop:
         layout = self._compute_wm_layout(out_w, out_h)
         if not layout:
             return None
-        tx, ty, tw, th, font, color, bbox = layout
-        pad = 4
+        tx, ty, tw, th, font, color, bbox, bg_fill, bg_pad = layout
+        pad = max(4, bg_pad)
         lw = max(2, tw + pad * 2)
         lh = max(2, th + pad * 2)
         layer = Image.new("RGBA", (lw, lh), (0, 0, 0, 0))
         d = ImageDraw.Draw(layer)
+        if bg_fill is not None:
+            d.rectangle([pad - bg_pad, pad - bg_pad, pad + tw + bg_pad, pad + th + bg_pad], fill=bg_fill)
         d.text((pad - bbox[0], pad - bbox[1]), text, font=font, fill=color, anchor="la")
         ratio = wm_w / out_w  # 统一比例尺下的显示比：所有图片一致，水印相对裁剪框比例固定
         dw = max(1, int(round(lw * ratio)))
@@ -2054,10 +2119,11 @@ class BatchImageCrop:
         self.wm_box_canvas = None
         if layout:
             tx, ty, tw, th = layout[0], layout[1], layout[2], layout[3]
-            bx = px + tx * d
-            by = py + ty * d
-            bw = tw * d
-            bh = th * d
+            bg_pad = layout[8]
+            bx = px + (tx - bg_pad) * d
+            by = py + (ty - bg_pad) * d
+            bw = (tw + bg_pad * 2) * d
+            bh = (th + bg_pad * 2) * d
             self.wm_box_canvas = (bx, by, bx + bw, by + bh)
             self.wm_canvas.create_rectangle(bx - 3, by - 3, bx + bw + 3, by + bh + 3,
                                             outline="#ffd400", dash=(5, 3), width=1)
